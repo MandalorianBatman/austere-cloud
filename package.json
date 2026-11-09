@@ -1,0 +1,21 @@
+{
+  "name": "austere-cloud",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hosted share links for austere-axi: a Cloudflare Worker with D1 and R2.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
+    "@cloudflare/workers-types": "^5.20261109.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.158.0"
+  }
+}
