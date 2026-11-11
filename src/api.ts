@@ -2,7 +2,7 @@
 // token; only its SHA-256 is stored.
 import type { Env } from "./env";
 import { HOUR, LIMITS, hit, ipHash } from "./limits";
-import { parseUpload, type Upload } from "./upload";
+import { parseUpload, type PackMeta, type Upload } from "./upload";
 import { HttpError, PAGE_ID_RE, b64url, json, randomId, sha256Hex } from "./util";
 
 export const RETENTION_MS = 30 * 24 * HOUR;
@@ -97,12 +97,20 @@ async function updatePage(env: Env, request: Request, id: string): Promise<Respo
 async function deletePage(env: Env, request: Request, id: string): Promise<Response> {
   const owner = await authenticate(env, request);
   await ownPage(env, owner, id);
+  const row = await env.DB.prepare("SELECT packs FROM pages WHERE id = ?").bind(id).first<{ packs: string }>();
   await env.PAGES.delete(pageKey(id));
   await env.DB.batch([
     env.DB.prepare("DELETE FROM notes WHERE page_id = ?").bind(id),
     env.DB.prepare("DELETE FROM replies WHERE page_id = ?").bind(id),
     env.DB.prepare("DELETE FROM pages WHERE id = ?").bind(id),
   ]);
+  // Pack blobs are shared by sha: drop one only when no remaining page lists it.
+  for (const { sha256 } of JSON.parse(row?.packs ?? "[]") as PackMeta[]) {
+    const used = await env.DB.prepare("SELECT 1 AS ok FROM pages, json_each(pages.packs) AS p WHERE json_extract(p.value, '$.sha256') = ? LIMIT 1")
+      .bind(sha256)
+      .first();
+    if (!used) await env.PAGES.delete(packKey(sha256));
+  }
   return new Response(null, { status: 204 });
 }
 

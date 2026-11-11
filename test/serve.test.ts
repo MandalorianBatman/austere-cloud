@@ -7,7 +7,7 @@ describe("hosted page headers", () => {
     const { body } = await publish(await newOwner());
     const res = await call(`/p/${body.id}`);
     const csp = res.headers.get("content-security-policy")!;
-    for (const d of ["default-src 'none'", "frame-src 'self'", "frame-ancestors 'none'", "connect-src 'self'", "base-uri 'none'"]) {
+    for (const d of ["default-src 'none'", "frame-src 'self'", "frame-ancestors 'none'", "connect-src 'self'", "base-uri 'none'", "font-src data:"]) {
       expect(csp).toContain(d);
     }
     expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
@@ -44,6 +44,7 @@ describe("hosted page headers", () => {
     expect(csp).toContain("sandbox allow-scripts;");
     expect(csp).not.toContain("allow-same-origin");
     expect(csp).toContain("connect-src 'none'");
+    expect(csp).toContain("font-src data:");
     expect(csp).toContain("default-src 'none'");
     expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
     expect(res.headers.get("content-type")).toContain("text/html");
@@ -52,7 +53,7 @@ describe("hosted page headers", () => {
 });
 
 describe("page availability", () => {
-  it("404s for unknown, malformed, expired and taken-down pages", async () => {
+  it("404s for unknown, malformed and expired pages; 410 once taken down", async () => {
     const token = await newOwner();
     const { body } = await publish(token);
     expect((await call(`/p/${"A".repeat(22)}`)).status).toBe(404);
@@ -66,11 +67,23 @@ describe("page availability", () => {
     expect((await call(`/api/pages/${body.id}`, { method: "PUT", token, json: { cliVersion: CLI, html: PAGE_HTML } })).status).toBe(404);
 
     await env.DB.prepare("UPDATE pages SET expires_at = ?, taken_down = 1").bind(Date.now() + 1e9).run();
-    expect((await call(`/p/${body.id}`)).status).toBe(404);
+    expect((await call(`/p/${body.id}`)).status).toBe(410);
+    expect((await call(`/p/${body.id}/a/`)).status).toBe(410);
     await env.DB.prepare("UPDATE pages SET taken_down = 0").run();
     expect((await call(`/p/${body.id}`)).status).toBe(200);
     await env.DB.prepare("INSERT INTO blocked_ids (page_id) VALUES (?)").bind(body.id).run();
+    expect((await call(`/p/${body.id}`)).status).toBe(410);
+    await env.DB.prepare("DELETE FROM pages").run();
+    expect((await call(`/p/${body.id}`)).status).toBe(410); // the tombstone outlives the row
+    await env.DB.prepare("DELETE FROM blocked_ids").run();
     expect((await call(`/p/${body.id}`)).status).toBe(404);
+  });
+
+  it("410s every page of a blocked owner", async () => {
+    const { body } = await publish(await newOwner());
+    await env.DB.prepare("UPDATE owners SET blocked = 1").run();
+    expect((await call(`/p/${body.id}`)).status).toBe(410);
+    expect((await call(`/p/${body.id}/a/`)).status).toBe(410);
   });
 
   it("only GET and HEAD reach the pages", async () => {

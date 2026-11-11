@@ -62,6 +62,22 @@ describe("publish lifecycle", () => {
     expect(left.results.map((r) => r.page_id)).toEqual([b, b]);
   });
 
+  it("deleting a page drops pack blobs no other page references", async () => {
+    const token = await newOwner();
+    const shared = "shared();";
+    const solo = "solo();";
+    const [sSha, oSha] = [await sha256Hex(shared), await sha256Hex(solo)];
+    const tag = (sha: string) => `<script src="/pk/${sha}.js"></script>`;
+    const packs = (...ps: [string, string][]) => ps.map(([sha256, code]) => ({ sha256, name: "x", version: "1.0.0", code }));
+    const a = await publish(token, { html: PAGE_HTML.replace("</head>", `${tag(sSha)}${tag(oSha)}</head>`), packs: packs([sSha, shared], [oSha, solo]) });
+    const b = await publish(token, { html: PAGE_HTML.replace("</head>", tag(sSha) + "</head>"), packs: packs([sSha, shared]) });
+    await call(`/api/pages/${a.body.id}`, { method: "DELETE", token });
+    expect((await call(`/pk/${oSha}.js`)).status).toBe(404);
+    expect((await call(`/pk/${sSha}.js`)).status).toBe(200);
+    await call(`/api/pages/${b.body.id}`, { method: "DELETE", token });
+    expect((await call(`/pk/${sSha}.js`)).status).toBe(404);
+  });
+
   it("accepts a gzip-encoded body and a plain one", async () => {
     const token = await newOwner();
     const gz = await call("/api/pages", {
@@ -119,6 +135,7 @@ describe("upload validation", () => {
     ["other runtime version", `<script src="/rt/9.9.9/austere.js"></script>`],
     ["runtime asset not on the allow-list", `<script src="/rt/${CLI}/cli.mjs"></script>`],
     ["runtime path traversal", `<script src="/rt/${CLI}/packs/../../x.js"></script>`],
+    ["runtime pack fallback path", `<script src="/rt/${CLI}/packs/shadcn/pack.js"></script>`],
     ["query string on a runtime asset", `<script src="/rt/${CLI}/austere.js?x=1"></script>`],
     ["pack that was not uploaded", `<script src="/pk/${"a".repeat(64)}.js"></script>`],
     ["data URL", `<script src="data:text/javascript,alert(1)"></script>`],

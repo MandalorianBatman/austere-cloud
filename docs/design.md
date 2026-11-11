@@ -53,15 +53,15 @@ reviewer's browser ◄───────────────────�
 
 `publish` reuses `readArtifact` and `rewriteRuntime` (see `src/cli/export.js`):
 
-1. Replace the runtime `<script>` tag with `<script src="/rt/<cliVersion>/austere.js"></script>`. Add `/rt/<cliVersion>/mermaid.min.js` when the program uses `Mermaid(`. Add `/rt/<cliVersion>/packs/<name>.js` for each implicit `@austere-axi/*` pack.
-2. Each installed third-party pack is uploaded as a blob and referenced as `/pk/<sha256>.js`. A pack that is missing locally or doesn't match is an error, because the hosted page can't fetch it from a CDN.
-3. Relative-path images are inlined as `data:` URLs.
-4. Everything else in the file is byte-for-byte unchanged, which keeps the AGENTS.md rule that the served artifact equals the file except for runtime tags.
+1. Replace the runtime `<script>` tag with `<script src="/rt/<cliVersion>/austere.js"></script>`. Add `/rt/<cliVersion>/mermaid.min.js` before it when the program uses `Mermaid(`. Add `/rt/<cliVersion>/packs/<id>.js` after it for each bundled pack the program calls (`implicitPacks`, as `export` inlines them). The runtime's own fallback, `/rt/<cliVersion>/packs/<id>/pack.js`, is not on the Worker's asset allow-list, so the tag must already have registered the pack.
+2. Each installed pack the page declares is uploaded as a blob and gets a `<script src="/pk/<sha256>.js"></script>` tag after the runtime, so it registers before the runtime looks for it (the runtime would otherwise try the npm CDN, which the frame CSP blocks). `sha256` is the hex SHA-256 of the UTF-8 `pack.js`. A pack that is missing locally, installed at another version, or rebuilt since the page's hash was written is an error, because the hosted page can't fetch it from a CDN.
+3. Relative-path images (the `src` of `Image(alt, src)` and Markdown `![…](…)` links, ending in `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg` or `.avif`) are inlined as `data:` URLs. Other path-like strings, such as `FileTree` entries, stay text. As in the local server, only files in the page's own directory tree count, after resolving symlinks, with no dotfiles; anything else, or a missing file, is an error.
+4. Everything else in the file is byte-for-byte unchanged. Inlining relative images (step 3) is the one explicit exception beyond runtime tags: the hosted page has no file system to resolve them against. Otherwise this keeps the AGENTS.md rule that the served artifact equals the file except for runtime tags.
 
 Request body (`application/json`, gzip-encoded):
 
 ```json
-{ "cliVersion": "0.5.0", "title": "Plan", "html": "<!doctype html>…", "packs": [{ "sha256": "…", "name": "@acme/charts", "version": "1.2.0", "code": "…" }], "auto": false, "thirdPartyPacks": true }
+{ "cliVersion": "0.5.1", "title": "Plan", "html": "<!doctype html>…", "packs": [{ "sha256": "…", "name": "@acme/charts", "version": "1.2.0", "code": "…" }], "auto": false }
 ```
 
 The Worker checks that every `<script src>` in `html` points to `/rt/<cliVersion>/<allow-listed asset>` or to an uploaded `/pk/<sha>.js`, recomputes each pack's SHA-256 (over the UTF-8 bytes of `code`), and rejects anything else with 400.
@@ -105,12 +105,12 @@ Chrome hosted mode (an austere-axi change):
 Headers on `/p/:id`:
 
 ```
-Content-Security-Policy: default-src 'none'; script-src 'self' 'sha256-<boot script>'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+Content-Security-Policy: default-src 'none'; script-src 'self' 'sha256-<boot script>'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
 X-Robots-Tag: noindex, nofollow
 Referrer-Policy: no-referrer
 ```
 
-`GET /p/:id/a/` serves the artifact with `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'`. The frame cannot make network requests. Notes leave it only by `postMessage` to the chrome, which is how it already works locally (`src/runtime/index.jsx`).
+`GET /p/:id/a/` serves the artifact with `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src data:; connect-src 'none'`. `font-src data:` is needed in both CSPs: the runtime injects Inter as a `data:font/woff2` URL, and the chrome embeds Inter the same way. The frame cannot make network requests. Notes leave it only by `postMessage` to the chrome, which is how it already works locally (`src/runtime/index.jsx`).
 
 Implementation notes: `script-src 'self'` blocks the inline boot script, so the shell allows exactly that script by its SHA-256, computed per response. `GET /pk/<sha>.js` serves uploaded packs from R2 (`immutable`, `nosniff`).
 
@@ -133,15 +133,15 @@ The token is 32 random bytes, base64url, and only its SHA-256 is stored. Page id
 
 ### API
 
-Owner routes need `Authorization: Bearer <token>`. They return JSON and are not CORS-enabled, since the CLI calls them from Node. A missing or unknown token is 401, a blocked owner 403. A page that doesn't exist, is expired or taken down, or belongs to another owner is 404.
+Owner routes need `Authorization: Bearer <token>`. They return JSON and are not CORS-enabled, since the CLI calls them from Node. A missing or unknown token is 401, a blocked owner 403. A page that doesn't exist, is expired or taken down, or belongs to another owner is 404. Errors are JSON `{ error }` with the status; the CLI prints `error` as is.
 
 | Route | Purpose |
 |---|---|
-| `POST /api/owners` | Creates an owner and returns `{ token }`. Rate-limited per IP. |
-| `POST /api/pages` | Creates a page from the upload body and returns `{ id, url, expiresAt }`. |
-| `PUT /api/pages/:id` | Replaces the page (republish) and resets `expires_at`. Notes are kept. |
-| `DELETE /api/pages/:id` | Deletes the page, its blobs, notes and replies at once. |
-| `GET /api/pages` | Lists the owner's live pages as `{ pages: [{ id, title, url, expiresAt, notes }] }`, newest first. |
+| `POST /api/owners` | Creates an owner and returns `201 { token }`. Rate-limited per IP. |
+| `POST /api/pages` | Creates a page from the upload body and returns `201 { id, url, expiresAt }`. |
+| `PUT /api/pages/:id` | Replaces the page (republish), resets `expires_at` and returns `{ id, url, expiresAt }`. Notes are kept. 404 when the page expired, was deleted or is another owner's. |
+| `DELETE /api/pages/:id` | `204`. Deletes the page, its page blobs, notes and replies at once, and any pack blob no other page references (checked against the `packs` column of the remaining pages). |
+| `GET /api/pages` | Lists the owner's live pages, newest first: `{ pages: [{ id, title, url, expiresAt, notes }] }`. |
 | `GET /api/pages/:id/notes?after=<seq>&wait=25` | Long-poll. Returns `{ notes: [{ seq, author, items, at }], cursor }` once there are notes after `seq`, or empty after `wait` seconds (D1 is re-checked every 2 s). |
 | `POST /api/pages/:id/replies` | `{ text }`, an agent reply shown in the hosted conversation. |
 
@@ -149,7 +149,7 @@ Reviewer routes are same-origin from the hosted chrome, and a foreign `Origin` i
 
 | Route | Purpose |
 |---|---|
-| `GET /p/:id`, `GET /p/:id/a/` | Shell and artifact (above). Returns 404 when expired, deleted or taken down. |
+| `GET /p/:id`, `GET /p/:id/a/` | Shell and artifact (above). Returns 404 when expired or deleted, and 410 Gone when taken down (the page, its `blocked_ids` tombstone, or its owner). |
 | `POST /p/:id/send` | `{ name, items, end? }`, the same `items` shape the chrome posts locally. `end` is ignored for reviewers. |
 | `GET /p/:id/conversation?after=<cursor>` | The reviewer's view: replies plus notes, with the page's `published_at` so chrome can offer "new version, reload". |
 | `POST /p/:id/report` | `{ reason }`. Inserts a report row and emails the admin. |
@@ -162,15 +162,20 @@ New state: `~/.austere-axi/cloud.json` (mode 0600)
 { "url": "https://austere.kasat.xyz", "token": "…", "pages": { "/abs/path/plan.html": { "id": "…", "auto": false, "cursor": 0 } } }
 ```
 
-The service URL defaults to `https://austere.kasat.xyz`, and `AUSTERE_AXI_CLOUD_URL` overrides it for tests and self-hosting.
+The service URL defaults to `https://austere.kasat.xyz`, and `AUSTERE_AXI_CLOUD_URL` overrides it for tests and self-hosting. The token belongs to the `url` it was created on: when `AUSTERE_AXI_CLOUD_URL` names another service, `publish` stops with an error instead of sending the token there.
 
 Commands:
 
 ```
-austere-axi publish <file> [--auto] [--new]   upload; prints the URL (and on republish, "updated")
+austere-axi publish <file> [--auto] [--new]   upload; prints the URL (status: published, or updated on republish)
 austere-axi publish list                      your hosted pages, expiry, note counts
 austere-axi publish rm <file|id>              delete at once
 ```
+
+- The owner token is created on the first `publish` and saved before the upload.
+- `--auto` applies to that publish only; a publish without it sets the page back to hold, the safe default.
+- Republish keeps the page's `cursor`. If the service answers 404 (expired or deleted), `publish` says so and points at `--new`.
+- `rm` of a page the service no longer has still drops the local record.
 
 Sync into local sessions (Q8). This runs in the local server, which `poll` already starts:
 
@@ -192,7 +197,7 @@ Sync into local sessions (Q8). This runs in the local server, which `poll` alrea
 | Notes per page per IP | 60 per hour | 429 |
 | Note batch size | 4 KB of JSON `items` | 413 |
 | Reviewer name | 40 characters, plain text | Truncated |
-| Retention | 30 days after the last publish | A daily cron deletes pages, blobs, notes and replies |
+| Retention | 30 days after the last publish | A daily cron deletes pages, page blobs, notes, replies and unreferenced pack blobs |
 
 All text is rendered with `textContent` in chrome, never as HTML. Rate limits use the D1 `limits` table with fixed windows. This is cheap and good enough at this scale. Cloudflare's rate-limiting binding can replace it later.
 
