@@ -1,0 +1,21 @@
+name = "austere-cloud"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[vars]
+# First austere-axi release with hosted chrome and `publish`. /rt/<v>/ and uploads reject older versions.
+MIN_CLI_VERSION = "0.4.1"
+
+# Real ids are filled in by the deploy ticket; local dev and tests use local emulation.
+[[d1_databases]]
+binding = "DB"
+database_name = "austere-cloud"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "PAGES"
+bucket_name = "austere-cloud-pages"
+
+# Secrets (wrangler secret put): IP_HMAC_KEY now; ADMIN_TOKEN and ADMIN_EMAIL arrive with the admin ticket.
+# For `wrangler dev`, copy .dev.vars.example to .dev.vars.
