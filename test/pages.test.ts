@@ -1,127 +1,144 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { CLI, PAGE_HTML, call, gzip, newOwner, publish, sha256Hex, upload } from "./helpers";
+import { CLI, PAGE_HTML, call, createPage, gzip, newOwner, ownerSocket, publish, publishArgs, putObject, sha256Hex } from "./helpers";
+
+const row = (id: string) => env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first<Record<string, number | string | null>>();
+const objectKeys = async () => (await env.PAGES.list({ prefix: "objects/" })).objects.map((o) => o.key).sort();
 
 describe("publish lifecycle", () => {
-  it("create -> fetch -> republish -> delete", async () => {
+  it("create -> upload -> publish -> fetch -> republish -> delete", async () => {
     const token = await newOwner();
-    const { res, body } = await publish(token);
-    expect(res.status).toBe(201);
-    expect(body.id).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(body.url).toBe(`https://austere.test/p/${body.id}`);
-    expect(body.expiresAt).toBeGreaterThan(Date.now() + 29 * 86400_000);
+    const created = await call("/api/pages", { method: "POST", token });
+    expect(created.status).toBe(201);
+    const { id, url } = (await created.json()) as { id: string; url: string };
+    expect(id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(url).toBe(`https://austere.test/p/${id}`);
+    // Unpublished: nothing to serve or list, and it expires in a day.
+    expect((await call(`/p/${id}`)).status).toBe(404);
+    expect((await call(`/p/${id}/a/`)).status).toBe(404);
+    expect(await (await call("/api/pages", { token })).json()).toEqual({ pages: [] });
+    expect(Number((await row(id))!.expires_at)).toBeLessThan(Date.now() + 86400_001);
 
-    // The artifact is served byte-for-byte.
-    const art = await call(`/p/${body.id}/a/`);
+    const { ack } = await publish(token, { id });
+    expect(ack.error).toBeUndefined();
+    const art = await call(`/p/${id}/a/`);
     expect(art.status).toBe(200);
     expect(await art.text()).toBe(PAGE_HTML);
-
-    // The shell boots hosted chrome from the pinned runtime.
-    const shell = await call(`/p/${body.id}`);
-    expect(shell.status).toBe(200);
-    const html = await shell.text();
-    expect(html).toContain(`/rt/${CLI}/chrome/chrome.js`);
-    expect(html).toContain(`"base":"/p/${body.id}"`);
-
-    const list = await call("/api/pages", { token });
-    expect(await list.json()).toEqual({
-      pages: [{ id: body.id, title: "Plan", url: body.url, expiresAt: body.expiresAt }],
+    const shell = await (await call(`/p/${id}`)).text();
+    expect(shell).toContain(`/rt/${CLI}/chrome/chrome.js`);
+    expect(shell).toContain(`"base":"/p/${id}"`);
+    const first = (await row(id))!;
+    expect(first).toMatchObject({ title: "Plan", cli_version: CLI, html: await sha256Hex(PAGE_HTML), bytes: PAGE_HTML.length, notes: 0 });
+    expect(Number(first.expires_at)).toBeGreaterThan(Date.now() + 29 * 86400_000);
+    expect(await (await call("/api/pages", { token })).json()).toEqual({
+      pages: [{ id, title: "Plan", url, expiresAt: first.expires_at, notes: 0 }],
     });
 
-    // Republish keeps the id and URL, replaces the content, resets the clock.
-    const before = await env.DB.prepare("SELECT published_at, expires_at FROM pages WHERE id = ?").bind(body.id).first<any>();
+    // Republish keeps the id, replaces the content, resets the clock, drops the old object.
     await new Promise((r) => setTimeout(r, 5));
     const html2 = PAGE_HTML.replace("Hello", "Hello again");
-    const put = await call(`/api/pages/${body.id}`, { method: "PUT", token, json: upload({ html: html2, title: "Plan v2" }) });
-    expect(put.status).toBe(200);
-    expect(((await put.json()) as any).id).toBe(body.id);
-    expect(await (await call(`/p/${body.id}/a/`)).text()).toBe(html2);
-    const after = await env.DB.prepare("SELECT title, published_at, expires_at FROM pages WHERE id = ?").bind(body.id).first<any>();
-    expect(after.title).toBe("Plan v2");
-    expect(after.published_at).toBeGreaterThan(before.published_at);
-    expect(after.expires_at).toBeGreaterThan(before.expires_at);
+    expect((await publish(token, { id, html: html2, args: { title: "Plan v2" } })).ack.error).toBeUndefined();
+    expect(await (await call(`/p/${id}/a/`)).text()).toBe(html2);
+    const second = (await row(id))!;
+    expect(second.title).toBe("Plan v2");
+    expect(Number(second.published_at)).toBeGreaterThan(Number(first.published_at));
+    expect(await objectKeys()).toEqual([`objects/${await sha256Hex(html2)}`]);
 
-    const del = await call(`/api/pages/${body.id}`, { method: "DELETE", token });
-    expect(del.status).toBe(204);
-    expect((await call(`/p/${body.id}`)).status).toBe(404);
-    expect((await call(`/p/${body.id}/a/`)).status).toBe(404);
-    expect(await env.PAGES.head(`pages/${body.id}/index.html`)).toBeNull();
+    const owner = await ownerSocket(token, id);
+    expect((await owner.mutate("delete", {})).error).toBeUndefined();
+    expect((await call(`/p/${id}`)).status).toBe(404);
+    expect((await call(`/p/${id}/a/`)).status).toBe(404);
+    expect(await row(id)).toBeNull();
+    expect(await objectKeys()).toEqual([]);
     expect(await (await call("/api/pages", { token })).json()).toEqual({ pages: [] });
   });
 
-  it("deleting a page keeps other pages", async () => {
+  it("keeps an object another page still names", async () => {
     const token = await newOwner();
-    const a = (await publish(token)).body.id;
-    const b = (await publish(token)).body.id;
-    await call(`/api/pages/${a}`, { method: "DELETE", token });
-    expect((await call(`/p/${a}`)).status).toBe(404);
-    expect((await call(`/p/${b}`)).status).toBe(200);
+    const a = await publish(token);
+    const b = await publish(token);
+    const owner = await ownerSocket(token, a.id);
+    await owner.mutate("delete", {});
+    expect((await call(`/p/${b.id}/a/`)).status).toBe(200);
+    expect(await objectKeys()).toEqual([`objects/${await sha256Hex(PAGE_HTML)}`]);
   });
 
-  it("deleting a page drops pack blobs no other page references", async () => {
+  it("the replaced REST routes are gone", async () => {
     const token = await newOwner();
-    const shared = "shared();";
-    const solo = "solo();";
-    const [sSha, oSha] = [await sha256Hex(shared), await sha256Hex(solo)];
-    const tag = (sha: string) => `<script src="/pk/${sha}.js"></script>`;
-    const packs = (...ps: [string, string][]) => ps.map(([sha256, code]) => ({ sha256, name: "x", version: "1.0.0", code }));
-    const a = await publish(token, { html: PAGE_HTML.replace("</head>", `${tag(sSha)}${tag(oSha)}</head>`), packs: packs([sSha, shared], [oSha, solo]) });
-    const b = await publish(token, { html: PAGE_HTML.replace("</head>", tag(sSha) + "</head>"), packs: packs([sSha, shared]) });
-    await call(`/api/pages/${a.body.id}`, { method: "DELETE", token });
-    expect((await call(`/pk/${oSha}.js`)).status).toBe(404);
-    expect((await call(`/pk/${sSha}.js`)).status).toBe(200);
-    await call(`/api/pages/${b.body.id}`, { method: "DELETE", token });
-    expect((await call(`/pk/${sSha}.js`)).status).toBe(404);
+    const { id } = await publish(token);
+    expect((await call(`/api/pages/${id}`, { method: "PUT", token, json: {} })).status).toBe(404);
+    expect((await call(`/api/pages/${id}`, { method: "DELETE", token })).status).toBe(404);
+    expect((await call(`/api/pages/${id}/notes?after=0`, { token })).status).toBe(404);
+    expect((await call(`/p/${id}/conversation`)).status).toBe(404);
+    expect((await call(`/p/${id}/send`, { method: "POST", json: {} })).status).toBe(404);
   });
+});
 
-  it("accepts a gzip-encoded body and a plain one", async () => {
+describe("objects", () => {
+  it("stores an object under its sha256, plain or gzip, once", async () => {
     const token = await newOwner();
-    const gz = await call("/api/pages", {
-      method: "POST",
+    const { res, sha } = await putObject(token, PAGE_HTML);
+    expect(res.status).toBe(204);
+    const obj = (await env.PAGES.get(`objects/${sha}`))!;
+    expect(await obj.text()).toBe(PAGE_HTML);
+    expect(obj.httpMetadata?.contentType).toBe("text/html; charset=utf-8");
+
+    const code = "window.__pack = 1;";
+    const gz = await call(`/api/objects/${await sha256Hex(code)}`, {
+      method: "PUT",
       token,
-      headers: { "content-encoding": "gzip", "content-type": "application/json" },
-      body: await gzip(JSON.stringify(upload())),
+      headers: { "content-type": "text/javascript", "content-encoding": "gzip" },
+      body: await gzip(code),
     });
-    expect(gz.status).toBe(201);
-    const row = await env.DB.prepare("SELECT bytes FROM pages").first<{ bytes: number }>();
-    expect(row!.bytes).toBeLessThan(JSON.stringify(upload()).length); // stored size is the wire size
-    expect((await publish(token)).res.status).toBe(201);
+    expect(gz.status).toBe(204);
+    expect(await (await env.PAGES.get(`objects/${await sha256Hex(code)}`))!.text()).toBe(code);
+    expect((await putObject(token, PAGE_HTML)).res.status).toBe(204); // existing: no-op
+  });
+
+  it("rejects a body that does not match its name, an unknown type, a bad name, no token", async () => {
+    const token = await newOwner();
+    const sha = await sha256Hex("good");
+    const put = (path: string, init: Parameters<typeof call>[1]) => call(path, { method: "PUT", ...init });
+    const mismatch = await put(`/api/objects/${sha}`, { token, body: "evil", headers: { "content-type": "text/html" } });
+    expect(mismatch.status).toBe(400);
+    expect(((await mismatch.json()) as { error: string }).error).toMatch(/sha256/);
+    expect((await put(`/api/objects/${sha}`, { token, body: "good", headers: { "content-type": "image/svg+xml" } })).status).toBe(400);
+    expect((await put(`/api/objects/${sha.toUpperCase()}`, { token, body: "good", headers: { "content-type": "text/html" } })).status).toBe(400);
+    expect((await put(`/api/objects/${sha}`, { body: "good", headers: { "content-type": "text/html" } })).status).toBe(401);
+    expect((await put(`/api/objects/${sha}`, { token, headers: { "content-type": "text/html", "content-encoding": "gzip" }, body: new Uint8Array([0x1f, 0x8b, 1, 2, 3]) })).status).toBe(400);
+    expect(await objectKeys()).toEqual([]);
   });
 });
 
 describe("auth", () => {
   it("rejects missing and wrong tokens", async () => {
-    expect((await call("/api/pages", { method: "POST", json: upload() })).status).toBe(401);
-    expect((await call("/api/pages", { method: "POST", token: "nope", json: upload() })).status).toBe(401);
+    expect((await call("/api/pages", { method: "POST" })).status).toBe(401);
+    expect((await call("/api/pages", { method: "POST", token: "nope" })).status).toBe(401);
     expect((await call("/api/pages", { token: "nope" })).status).toBe(401);
   });
 
   it("hides one owner's pages from another", async () => {
     const alice = await newOwner();
     const mallory = await newOwner("203.0.113.9");
-    const { body } = await publish(alice);
-    const put = await call(`/api/pages/${body.id}`, { method: "PUT", token: mallory, json: upload() });
-    const del = await call(`/api/pages/${body.id}`, { method: "DELETE", token: mallory });
-    expect([put.status, del.status]).toEqual([404, 404]);
+    await publish(alice);
     expect(await (await call("/api/pages", { token: mallory })).json()).toEqual({ pages: [] });
-    expect((await call(`/p/${body.id}`)).status).toBe(200); // still there
   });
 
   it("stores only a hash of the token", async () => {
     const token = await newOwner();
-    const row = await env.DB.prepare("SELECT token_hash FROM owners").first<{ token_hash: string }>();
-    expect(row!.token_hash).toBe(await sha256Hex(token));
-    expect(row!.token_hash).not.toContain(token);
+    const r = await env.DB.prepare("SELECT token_hash FROM owners").first<{ token_hash: string }>();
+    expect(r!.token_hash).toBe(await sha256Hex(token));
+    expect(r!.token_hash).not.toContain(token);
   });
 
   it("refuses a blocked owner", async () => {
     const token = await newOwner();
     await env.DB.prepare("UPDATE owners SET blocked = 1").run();
-    expect((await publish(token)).res.status).toBe(403);
+    expect((await call("/api/pages", { method: "POST", token })).status).toBe(403);
   });
 });
 
-describe("upload validation", () => {
+describe("publish validation", () => {
   const rejected = [
     ["foreign host", `<script src="https://evil.example/x.js"></script>`],
     ["protocol-relative", `<script src="//evil.example/x.js"></script>`],
@@ -134,7 +151,7 @@ describe("upload validation", () => {
     ["runtime path traversal", `<script src="/rt/${CLI}/packs/../../x.js"></script>`],
     ["runtime pack fallback path", `<script src="/rt/${CLI}/packs/shadcn/pack.js"></script>`],
     ["query string on a runtime asset", `<script src="/rt/${CLI}/austere.js?x=1"></script>`],
-    ["pack that was not uploaded", `<script src="/pk/${"a".repeat(64)}.js"></script>`],
+    ["pack the publish does not name", `<script src="/pk/${"a".repeat(64)}.js"></script>`],
     ["data URL", `<script src="data:text/javascript,alert(1)"></script>`],
     ["relative", `<script src="austere.js"></script>`],
     ["empty src", `<script src></script>`],
@@ -143,29 +160,28 @@ describe("upload validation", () => {
   for (const [name, tag] of rejected) {
     it(`rejects a script src: ${name}`, async () => {
       const token = await newOwner();
-      const { res, body } = await publish(token, { html: PAGE_HTML.replace("</head>", `${tag}</head>`) });
-      expect(res.status).toBe(400);
-      expect(body.error).toMatch(/script src/);
-      expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM pages").first<any>()).n).toBe(0);
+      const { id, ack } = await publish(token, { html: PAGE_HTML.replace("</head>", `${tag}</head>`) });
+      expect(ack.error).toMatchObject({ code: "invalid", message: expect.stringMatching(/script src/) });
+      expect((await row(id))!.published_at).toBeNull();
     });
   }
 
   it("ignores a src attribute mentioned inside another attribute's value", async () => {
     const token = await newOwner();
     const html = PAGE_HTML.replace("</head>", `<script data-x="src='https://evil.example/x.js'"></script></head>`);
-    expect((await publish(token, { html })).res.status).toBe(201);
+    expect((await publish(token, { html })).ack.error).toBeUndefined();
   });
 
-  it("accepts runtime assets and uploaded packs, and serves packs by sha", async () => {
+  it("accepts runtime assets and named packs, and serves packs by sha", async () => {
     const token = await newOwner();
     const code = "window.__pack = 1;";
     const sha = await sha256Hex(code);
-    const html = PAGE_HTML.replace(
-      "</head>",
-      `<script src="/rt/${CLI}/packs/shadcn.js"></script><script src="/pk/${sha}.js"></script></head>`,
-    );
-    const { res, body } = await publish(token, { html, packs: [{ sha256: sha, name: "@acme/charts", version: "1.2.0", code }] });
-    expect(res.status).toBe(201);
+    const html = PAGE_HTML.replace("</head>", `<script src="/rt/${CLI}/packs/shadcn.js"></script><script src="/pk/${sha}.js"></script></head>`);
+    // Uploaded but not yet named: not served.
+    await putObject(token, code, "text/javascript");
+    expect((await call(`/pk/${sha}.js`)).status).toBe(404);
+    const { id, ack } = await publish(token, { html, packs: [{ name: "@acme/charts", code }] });
+    expect(ack.error).toBeUndefined();
 
     const pk = await call(`/pk/${sha}.js`);
     expect(pk.status).toBe(200);
@@ -173,50 +189,29 @@ describe("upload validation", () => {
     expect(pk.headers.get("content-type")).toContain("text/javascript");
     expect(pk.headers.get("cache-control")).toContain("immutable");
     expect(pk.headers.get("x-content-type-options")).toBe("nosniff");
-
-    const row = await env.DB.prepare("SELECT packs FROM pages WHERE id = ?").bind(body.id).first<{ packs: string }>();
-    expect(JSON.parse(row!.packs)).toEqual([{ sha256: sha, name: "@acme/charts", version: "1.2.0" }]);
-  });
-
-  it("does not store uploaded packs the page never references", async () => {
-    const token = await newOwner();
-    const code = "unused();";
-    const sha = await sha256Hex(code);
-    expect((await publish(token, { packs: [{ sha256: sha, name: "x", version: "1.0.0", code }] })).res.status).toBe(201);
-    expect((await call(`/pk/${sha}.js`)).status).toBe(404);
-  });
-
-  it("rejects a pack whose code does not match its sha256", async () => {
-    const token = await newOwner();
-    const sha = await sha256Hex("good();");
-    const html = PAGE_HTML.replace("</head>", `<script src="/pk/${sha}.js"></script></head>`);
-    const { res, body } = await publish(token, { html, packs: [{ sha256: sha, name: "x", version: "1.0.0", code: "evil();" }] });
-    expect(res.status).toBe(400);
-    expect(body.error).toMatch(/sha256/);
-    expect((await call(`/pk/${sha}.js`)).status).toBe(404);
+    // A named HTML object is not served as a pack.
+    expect((await call(`/pk/${(await row(id))!.html}.js`)).status).toBe(404);
   });
 
   it("rejects a cliVersion below MIN_CLI_VERSION or not a release version", async () => {
     const token = await newOwner();
+    const id = await createPage(token);
     // 0.8.1 is the austere-axi release before `publish` existed.
-    for (const v of ["0.8.1", "0.4.0", "0.0.1", "1.0.0-rc.1", "latest", 5]) {
-      const { res, body } = await publish(token, { cliVersion: v, html: PAGE_HTML.replace(CLI, String(v)) });
-      expect(res.status, String(v)).toBe(400);
-      expect(body.error).toContain(env.MIN_CLI_VERSION);
+    for (const v of ["0.8.1", "0.4.0", "0.0.1", "1.0.0-rc.1"]) {
+      const { ack } = await publish(token, { id, html: PAGE_HTML.replace(CLI, v), args: { cliVersion: v } });
+      expect(ack.error, v).toMatchObject({ code: "invalid", message: expect.stringContaining(env.MIN_CLI_VERSION) });
     }
-    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM pages").first<any>()).n).toBe(0);
     // The floor itself and anything above it, including a double-digit minor, are accepted.
-    expect((await publish(token)).res.status).toBe(201);
-    expect((await publish(token, { cliVersion: "0.10.0", html: PAGE_HTML.replace(CLI, "0.10.0") })).res.status).toBe(201);
+    expect((await publish(token, { id })).ack.error).toBeUndefined();
+    expect((await publish(token, { id, html: PAGE_HTML.replace(CLI, "0.10.0"), args: { cliVersion: "0.10.0" } })).ack.error).toBeUndefined();
   });
 
-  it("rejects malformed bodies", async () => {
+  it("caps the title and defaults an empty one", async () => {
     const token = await newOwner();
-    expect((await call("/api/pages", { method: "POST", token, body: "{nope" })).status).toBe(400);
-    expect((await call("/api/pages", { method: "POST", token, body: "[]" })).status).toBe(400);
-    expect((await publish(token, { html: "" })).res.status).toBe(400);
-    expect((await publish(token, { html: 5 })).res.status).toBe(400);
-    expect((await call("/api/pages", { method: "POST", token, headers: { "content-encoding": "gzip" }, body: new Uint8Array([0x1f, 0x8b, 1, 2, 3]) })).status).toBe(400);
+    const { id } = await publish(token, { args: { title: "  " } });
+    expect((await row(id))!.title).toBe("Untitled");
+    await publish(token, { id, args: { title: "t".repeat(300) } });
+    expect(String((await row(id))!.title)).toHaveLength(200);
   });
 });
 
@@ -229,40 +224,44 @@ describe("size cap", () => {
     }
     return s.slice(0, n);
   };
+  const putGzip = async (token: string, text: string, headers: Record<string, string> = {}) => {
+    const body = await gzip(text);
+    const res = await call(`/api/objects/${await sha256Hex(text)}`, {
+      method: "PUT",
+      token,
+      headers: { "content-type": "text/html", "content-encoding": "gzip", ...headers },
+      body,
+    });
+    return { res, body };
+  };
 
   it("returns 413 when the gzip body exceeds 1 MB, naming the size", async () => {
     const token = await newOwner();
-    const body = await gzip(JSON.stringify(upload({ html: PAGE_HTML + `<!--${noise(1_300_000)}-->` })));
-    expect(body.byteLength).toBeGreaterThan(1024 * 1024);
-    const res = await call("/api/pages", {
-      method: "POST",
-      token,
-      headers: { "content-encoding": "gzip", "content-length": String(body.byteLength) },
-      body,
-    });
+    const text = PAGE_HTML + `<!--${noise(1_300_000)}-->`;
+    const size = (await gzip(text)).byteLength;
+    expect(size).toBeGreaterThan(1024 * 1024);
+    const { res } = await putGzip(token, text, { "content-length": String(size) });
     expect(res.status).toBe(413);
-    expect(((await res.json()) as any).error).toContain(String(body.byteLength));
-    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM pages").first<any>()).n).toBe(0);
+    expect(((await res.json()) as { error: string }).error).toContain(String(size));
+    expect(await objectKeys()).toEqual([]);
   });
 
   it("enforces the cap without trusting content-length", async () => {
     const token = await newOwner();
-    const body = await gzip(JSON.stringify(upload({ html: PAGE_HTML + `<!--${noise(1_300_000)}-->` })));
-    const res = await call("/api/pages", { method: "POST", token, headers: { "content-encoding": "gzip", "content-length": "100" }, body });
+    const { res } = await putGzip(token, PAGE_HTML + `<!--${noise(1_300_000)}-->`, { "content-length": "100" });
     expect(res.status).toBe(413);
   });
 
-  it("accepts a page just under the cap that is far larger once inflated", async () => {
+  it("accepts an object just under the cap that is far larger once inflated", async () => {
     const token = await newOwner();
-    const html = PAGE_HTML + `<!--${"x".repeat(5_000_000)}-->`;
-    expect((await call("/api/pages", { method: "POST", token, headers: { "content-encoding": "gzip" }, body: await gzip(JSON.stringify(upload({ html }))) })).status).toBe(201);
+    expect((await putGzip(token, PAGE_HTML + `<!--${"x".repeat(5_000_000)}-->`)).res.status).toBe(204);
   });
 
   it("returns 413 for a gzip bomb instead of inflating it", async () => {
     const token = await newOwner();
-    const bomb = await gzip(JSON.stringify(upload({ html: PAGE_HTML + `<!--${"x".repeat(40_000_000)}-->` })));
-    expect(bomb.byteLength).toBeLessThan(1024 * 1024);
-    expect((await call("/api/pages", { method: "POST", token, headers: { "content-encoding": "gzip" }, body: bomb })).status).toBe(413);
+    const { res, body } = await putGzip(token, PAGE_HTML + `<!--${"x".repeat(40_000_000)}-->`);
+    expect(body.byteLength).toBeLessThan(1024 * 1024);
+    expect(res.status).toBe(413);
   });
 });
 
@@ -276,30 +275,17 @@ describe("rate limits", () => {
     expect((await call("/api/owners", { method: "POST", ip: "198.51.100.2" })).status).toBe(201);
   });
 
-  it("limits publishes to 20 per owner per day, creates and updates together", async () => {
-    const token = await newOwner();
-    const id = (await publish(token)).body.id;
-    for (let i = 0; i < 19; i++) {
-      const res = await call(`/api/pages/${id}`, { method: "PUT", token, json: upload() });
-      expect(res.status).toBe(200);
-    }
-    expect((await call(`/api/pages/${id}`, { method: "PUT", token, json: upload() })).status).toBe(429);
-    expect((await publish(token)).res.status).toBe(429);
-    // Another owner (from another IP) is unaffected.
-    expect((await publish(await newOwner("198.51.100.7"), {}, "198.51.100.7")).res.status).toBe(201);
-  });
-
   it("limits publishes to 100 per IP per day across owners", async () => {
     const tokens = [];
     for (let i = 0; i < 5; i++) tokens.push(await newOwner(`198.51.100.${10 + i}`));
-    let n = 0;
-    for (let i = 0; i < 100; i++) {
-      const { res } = await publish(tokens[i % 5], {}, "192.0.2.50");
-      expect(res.status).toBe(201);
-      n++;
+    const sockets = [];
+    for (const token of tokens) {
+      const id = await createPage(token);
+      sockets.push(await ownerSocket(token, id, { ip: "192.0.2.50" }));
     }
-    expect(n).toBe(100);
-    expect((await publish(tokens[0], {}, "192.0.2.50")).res.status).toBe(429);
+    const { sha } = await putObject(tokens[0], PAGE_HTML);
+    for (let i = 0; i < 100; i++) expect((await sockets[i % 5].mutate("publish", publishArgs(sha))).error, String(i)).toBeUndefined();
+    expect((await sockets[0].mutate("publish", publishArgs(sha))).error).toMatchObject({ code: "rate_limited" });
   });
 
   it("starts a new window once the old one has elapsed", async () => {

@@ -7,6 +7,10 @@ compatibility_date = "2026-08-01"
 # The only place this value is set; tests read it from the binding. Provisional until RLM-271 confirms it at release.
 MIN_CLI_VERSION = "0.9.0"
 
+# Reviewer sockets without an invite: until invites land (RLM-314), the unguessable page id is the
+# reviewer's credential. "false" refuses every reviewer socket on a page that is not unlisted.
+PAGE_ID_AS_CREDENTIAL = "true"
+
 # Real ids are filled in by the deploy ticket; local dev and tests use local emulation.
 [[d1_databases]]
 binding = "DB"
@@ -20,3 +24,12 @@ bucket_name = "austere-cloud-pages"
 
 # Secrets (wrangler secret put): IP_HMAC_KEY now; ADMIN_TOKEN and ADMIN_EMAIL arrive with the admin ticket.
 # For `wrangler dev`, copy .dev.vars.example to .dev.vars.
+
+# One SQLite-backed page object per page: op log, rows, idempotency keys, WebSocket change feed.
+[[durable_objects.bindings]]
+name = "PAGE"
+class_name = "PageObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PageObject"]

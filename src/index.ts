@@ -3,6 +3,9 @@ import { handleApi } from "./api";
 import { handleServe } from "./serve";
 import { serveRuntime } from "./runtime";
 import { HttpError, json } from "./util";
+import { reviewerSync } from "./sync";
+
+export { PageObject } from "./page";
 
 async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const path = new URL(request.url).pathname;
@@ -10,6 +13,9 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   if (path.startsWith("/api/")) {
     return (await handleApi(request, env, path)) ?? json({ error: "not found" }, 404);
   }
+
+  const sync = /^\/p\/([^/]+)\/sync$/.exec(path);
+  if (sync) return request.method === "GET" ? reviewerSync(request, env, sync[1]) : new Response("method not allowed", { status: 405 });
 
   const rt = /^\/rt\/([^/]+)\/(.+)$/.exec(path);
   if (rt) {
