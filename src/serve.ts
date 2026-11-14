@@ -1,7 +1,7 @@
 // Public serving: the chrome shell (/p/:id), the sandboxed artifact (/p/:id/a/)
-// and uploaded pack blobs (/pk/<sha>.js).
+// and pack objects (/pk/<sha>.js).
 import type { Env } from "./env";
-import { packKey, pageKey } from "./api";
+import { JS_TYPE, objectKey } from "./objects";
 import { PAGE_ID_RE, SHA_RE } from "./util";
 
 const NOT_FOUND = () => new Response("not found", { status: 404, headers: { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store" } });
@@ -9,21 +9,24 @@ const GONE = () => new Response("gone", { status: 410, headers: { "x-robots-tag"
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-interface PageRow {
+export interface PageRow {
   id: string;
+  owner_id: string;
   title: string;
   cli_version: string;
-  published_at: number;
+  /** SHA-256 of the page HTML object; null until the first publish. */
+  html: string | null;
+  published_at: number | null;
 }
 
 /**
- * A page that is published and unexpired, `gone` when it was taken down (the page,
- * its id or its owner), or null when there is nothing at that id.
+ * A page that is unexpired, `gone` when it was taken down (the page, its id or its owner),
+ * or null when there is nothing at that id. The page may not be published yet.
  */
-async function livePage(env: Env, id: string): Promise<PageRow | "gone" | null> {
+export async function livePage(env: Env, id: string): Promise<PageRow | "gone" | null> {
   if (!PAGE_ID_RE.test(id)) return null;
   const row = await env.DB.prepare(
-    `SELECT p.id, p.title, p.cli_version, p.published_at, p.expires_at,
+    `SELECT p.id, p.owner_id, p.title, p.cli_version, p.html, p.published_at, p.expires_at,
             (p.taken_down OR o.blocked OR EXISTS (SELECT 1 FROM blocked_ids b WHERE b.page_id = p.id)) AS gone
      FROM pages p JOIN owners o ON o.id = p.owner_id WHERE p.id = ?`,
   )
@@ -37,6 +40,13 @@ async function livePage(env: Env, id: string): Promise<PageRow | "gone" | null> 
   return row.expires_at > Date.now() ? row : null;
 }
 
+/** `livePage`, but only once published. */
+async function publishedPage(env: Env, id: string): Promise<(PageRow & { html: string; published_at: number }) | "gone" | null> {
+  const page = await livePage(env, id);
+  if (page === "gone") return page;
+  return page && page.html !== null && page.published_at !== null ? { ...page, html: page.html, published_at: page.published_at } : null;
+}
+
 function b64(buf: ArrayBuffer): string {
   let s = "";
   for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
@@ -44,7 +54,7 @@ function b64(buf: ArrayBuffer): string {
 }
 
 async function shell(env: Env, id: string): Promise<Response> {
-  const page = await livePage(env, id);
+  const page = await publishedPage(env, id);
   if (page === "gone") return GONE();
   if (!page) return NOT_FOUND();
   const base = `/p/${page.id}`;
@@ -89,10 +99,10 @@ async function shell(env: Env, id: string): Promise<Response> {
 }
 
 async function artifact(env: Env, id: string): Promise<Response> {
-  const page = await livePage(env, id);
+  const page = await publishedPage(env, id);
   if (page === "gone") return GONE();
   if (!page) return NOT_FOUND();
-  const obj = await env.PAGES.get(pageKey(id));
+  const obj = await env.PAGES.get(objectKey(page.html));
   if (!obj) return NOT_FOUND();
   return new Response(obj.body, {
     headers: {
@@ -107,10 +117,13 @@ async function artifact(env: Env, id: string): Promise<Response> {
   });
 }
 
+/** A JS object some page's publish names as a pack. */
 async function pack(env: Env, sha: string): Promise<Response> {
   if (!SHA_RE.test(sha)) return NOT_FOUND();
-  const obj = await env.PAGES.get(packKey(sha));
-  if (!obj) return NOT_FOUND();
+  const named = await env.DB.prepare("SELECT 1 AS ok FROM page_objects WHERE sha = ? LIMIT 1").bind(sha).first();
+  if (!named) return NOT_FOUND();
+  const obj = await env.PAGES.get(objectKey(sha));
+  if (!obj || obj.httpMetadata?.contentType !== JS_TYPE) return NOT_FOUND();
   return new Response(obj.body, {
     headers: {
       "content-type": "text/javascript; charset=utf-8",

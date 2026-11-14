@@ -1,10 +1,11 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CLI, PAGE_HTML, call, newOwner, publish } from "./helpers";
+import { syncProtocols } from "austere-axi/sync";
+import { CLI, PAGE_HTML, call, newOwner, open, publish } from "./helpers";
 
 describe("hosted page headers", () => {
   it("shell: strict CSP with the boot script allowed by hash, noindex", async () => {
-    const { body } = await publish(await newOwner());
+    const body = await publish(await newOwner());
     const res = await call(`/p/${body.id}`);
     const csp = res.headers.get("content-security-policy")!;
     for (const d of ["default-src 'none'", "frame-src 'self'", "frame-ancestors 'none'", "connect-src 'self'", "base-uri 'none'", "font-src data:"]) {
@@ -22,7 +23,7 @@ describe("hosted page headers", () => {
   });
 
   it("shell boot has the design's fields and can't be broken out of through the title", async () => {
-    const { body } = await publish(await newOwner(), { title: `</script><img src=x onerror=alert(1)>` });
+    const body = await publish(await newOwner(), { args: { title: `</script><img src=x onerror=alert(1)>` } });
     const html = await (await call(`/p/${body.id}`)).text();
     expect(html).not.toContain("</script><img");
     expect(html).toContain("&lt;/script&gt;");
@@ -38,7 +39,7 @@ describe("hosted page headers", () => {
   });
 
   it("artifact: sandbox CSP without allow-same-origin, no network, noindex", async () => {
-    const { body } = await publish(await newOwner());
+    const body = await publish(await newOwner());
     const res = await call(`/p/${body.id}/a/`);
     const csp = res.headers.get("content-security-policy")!;
     expect(csp).toContain("sandbox allow-scripts;");
@@ -55,7 +56,7 @@ describe("hosted page headers", () => {
 describe("page availability", () => {
   it("404s for unknown, malformed and expired pages; 410 once taken down", async () => {
     const token = await newOwner();
-    const { body } = await publish(token);
+    const body = await publish(token);
     expect((await call(`/p/${"A".repeat(22)}`)).status).toBe(404);
     expect((await call(`/p/short`)).status).toBe(404);
     expect((await call(`/p/${body.id}/a`)).status).toBe(404);
@@ -64,7 +65,9 @@ describe("page availability", () => {
     await env.DB.prepare("UPDATE pages SET expires_at = ?").bind(Date.now() - 1).run();
     expect((await call(`/p/${body.id}`)).status).toBe(404);
     expect((await call(`/p/${body.id}/a/`)).status).toBe(404);
-    expect((await call(`/api/pages/${body.id}`, { method: "PUT", token, json: { cliVersion: CLI, html: PAGE_HTML } })).status).toBe(404);
+    // The owner can't reach an expired page's object either.
+    const expired = await open(`/api/pages/${body.id}/sync?cli=${CLI}`, { protocols: syncProtocols({ owner: token }) });
+    expect((expired as Response).status).toBe(404);
 
     await env.DB.prepare("UPDATE pages SET expires_at = ?, taken_down = 1").bind(Date.now() + 1e9).run();
     expect((await call(`/p/${body.id}`)).status).toBe(410);
@@ -80,14 +83,14 @@ describe("page availability", () => {
   });
 
   it("410s every page of a blocked owner", async () => {
-    const { body } = await publish(await newOwner());
+    const body = await publish(await newOwner());
     await env.DB.prepare("UPDATE owners SET blocked = 1").run();
     expect((await call(`/p/${body.id}`)).status).toBe(410);
     expect((await call(`/p/${body.id}/a/`)).status).toBe(410);
   });
 
   it("only GET and HEAD reach the pages", async () => {
-    const { body } = await publish(await newOwner());
+    const body = await publish(await newOwner());
     expect((await call(`/p/${body.id}`, { method: "POST" })).status).toBe(405);
   });
 });
