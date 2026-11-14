@@ -9,7 +9,7 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations, IP_HMAC_KEY: "test-hmac-key", MIN_CLI_VERSION: "0.4.1" },
+          bindings: { TEST_MIGRATIONS: migrations, IP_HMAC_KEY: "test-hmac-key" },
         },
       }),
     ],

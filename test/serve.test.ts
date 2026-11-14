@@ -106,46 +106,55 @@ describe("/rt/<version>/<asset> proxy", () => {
 
   it("proxies allow-listed assets from jsDelivr with the right type and caching, once", async () => {
     const spy = upstream();
-    const a = await call("/rt/0.5.0/austere.js");
+    const a = await call("/rt/1.0.0/austere.js");
     expect(a.status).toBe(200);
-    expect(await a.text()).toBe("// https://cdn.jsdelivr.net/npm/austere-axi@0.5.0/dist/austere.js");
+    expect(await a.text()).toBe("// https://cdn.jsdelivr.net/npm/austere-axi@1.0.0/dist/austere.js");
     expect(a.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
     expect(a.headers.get("cache-control")).toContain("immutable");
     expect(a.headers.get("x-content-type-options")).toBe("nosniff");
 
-    expect((await (await call("/rt/0.5.0/austere.js")).text())).toContain("austere.js"); // second hit: cache
-    expect(spy.mock.calls.filter(([u]) => String(u).includes("0.5.0/dist/austere.js")).length).toBe(1);
+    expect((await (await call("/rt/1.0.0/austere.js")).text())).toContain("austere.js"); // second hit: cache
+    expect(spy.mock.calls.filter(([u]) => String(u).includes("1.0.0/dist/austere.js")).length).toBe(1);
   });
 
   it("maps assets onto the package layout", async () => {
     const spy = upstream();
-    const css = await call("/rt/0.5.1/chrome/chrome.css");
+    const css = await call("/rt/1.0.1/chrome/chrome.css");
     expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
-    await call("/rt/0.5.1/chrome/chrome.js");
-    await call("/rt/0.5.1/mermaid.min.js");
-    await call("/rt/0.5.1/packs/shadcn.js");
-    expect(spy.mock.calls.map(([u]) => String(u).replace("https://cdn.jsdelivr.net/npm/austere-axi@0.5.1/dist/", ""))).toEqual([
+    await call("/rt/1.0.1/chrome/chrome.js");
+    await call("/rt/1.0.1/packs/shadcn.js");
+    expect(spy.mock.calls.map(([u]) => String(u).replace("https://cdn.jsdelivr.net/npm/austere-axi@1.0.1/dist/", ""))).toEqual([
       "chrome/chrome.css",
       "chrome/chrome.js",
-      "mermaid.min.js",
       "packs/shadcn/pack.js",
     ]);
+  });
+
+  it("404s mermaid.min.js without contacting jsDelivr (Mermaid is a pack now)", async () => {
+    const spy = upstream();
+    expect((await call("/rt/1.0.1/mermaid.min.js")).status).toBe(404);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("404s a version below MIN_CLI_VERSION without contacting jsDelivr", async () => {
+    const spy = upstream();
+    for (const v of ["0.0.1", "0.8.1"]) expect((await call(`/rt/${v}/austere.js`)).status, v).toBe(404);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("never fetches anything off the allow-list or below MIN_CLI_VERSION", async () => {
     const spy = upstream();
     for (const p of [
-      "/rt/0.5.2/cli.mjs",
-      "/rt/0.5.2/package.json",
-      "/rt/0.5.2/../austere.js",
-      "/rt/0.5.2/packs/shadcn/pack.js",
-      "/rt/0.5.2/packs/Bad.js",
-      "/rt/0.5.2/packs/%2e%2e/x.js",
-      "/rt/0.5.2/austere.js/extra",
-      "/rt/0.4.0/austere.js",
+      "/rt/1.0.2/cli.mjs",
+      "/rt/1.0.2/package.json",
+      "/rt/1.0.2/../austere.js",
+      "/rt/1.0.2/packs/shadcn/pack.js",
+      "/rt/1.0.2/packs/Bad.js",
+      "/rt/1.0.2/packs/%2e%2e/x.js",
+      "/rt/1.0.2/austere.js/extra",
       "/rt/latest/austere.js",
-      "/rt/0.5.2-beta.1/austere.js",
-      "/rt/0.5/austere.js",
+      "/rt/1.0.2-beta.1/austere.js",
+      "/rt/1.0/austere.js",
     ]) {
       expect((await call(p)).status, p).toBe(404);
     }
@@ -153,16 +162,16 @@ describe("/rt/<version>/<asset> proxy", () => {
   });
 
   it("passes upstream 404 through and reports other upstream failures as 502, uncached", async () => {
-    upstream((u) => (u.includes("@0.6.0/") ? new Response("nope", { status: 404 }) : new Response("boom", { status: 503 })));
-    expect((await call("/rt/0.6.0/austere.js")).status).toBe(404);
-    expect((await call("/rt/0.6.1/austere.js")).status).toBe(502);
+    upstream((u) => (u.includes("@1.1.0/") ? new Response("nope", { status: 404 }) : new Response("boom", { status: 503 })));
+    expect((await call("/rt/1.1.0/austere.js")).status).toBe(404);
+    expect((await call("/rt/1.1.1/austere.js")).status).toBe(502);
     const spy = upstream();
     spy.mockClear();
-    expect((await call("/rt/0.6.1/austere.js")).status).toBe(200);
+    expect((await call("/rt/1.1.1/austere.js")).status).toBe(200);
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it("rejects other methods", async () => {
-    expect((await call("/rt/0.5.0/austere.js", { method: "POST" })).status).toBe(405);
+    expect((await call("/rt/1.0.0/austere.js", { method: "POST" })).status).toBe(405);
   });
 });

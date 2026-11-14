@@ -18,9 +18,9 @@ Out of scope: a paid tier (teams, private pages, longer history; see RLM-249), l
 
 | # | Topic | Decision |
 |---|---|---|
-| Q1 | Hosting | Cloudflare Workers, R2 for page blobs, and D1 for pages, notes, tokens and reports. Free tier. |
+| Q1 | Hosting | Cloudflare Workers, R2 for page blobs, D1 for pages, owners and reports, and a per-page Durable Object for notes and replies (decided 2026-11-14). Free tier. |
 | Q2 | Domain | `https://austere.kasat.xyz`, with pages at `/p/<id>`. No separate user-content domain; the sandbox's opaque origin isolates the artifact. A brandable alias can be added later. |
-| Q3 | Upload | The raw artifact plus third-party pack bundles. The service serves pinned runtime, Mermaid, chrome and `@austere-axi/*` packs by CLI version. Relative images are inlined as data URLs within the size cap. |
+| Q3 | Upload | The raw artifact plus third-party pack bundles. The service serves pinned runtime, chrome and `@austere-axi/*` packs by CLI version. Relative images are inlined as data URLs within the size cap. |
 | Q4 | Republish | `publish` on the same file updates the same URL. The page id is stored in local state, keyed by absolute path. `--new` forces a fresh link. Old versions are not kept. |
 | Q5 | Identity | An anonymous owner token, created on first `publish` and stored in `~/.austere-axi/cloud.json`. GitHub login comes later. |
 | Q6 | Reviewers | Open link with a 128-bit unguessable id, unlisted, `noindex`. A one-time name prompt (stored in localStorage) appears before the first note. Names are self-declared. |
@@ -37,7 +37,7 @@ Out of scope: a paid tier (teams, private pages, longer history; see RLM-249), l
 austere-axi (CLI, local)                         austere-cloud (Cloudflare Worker)
 ────────────────────────                         ──────────────────────────────────
 publish plan.html ──── PUT /api/pages/:id ─────► R2: pages/<id>/index.html, packs/<sha>.js
-  cloud.json (token, path → page id)             D1: owners, pages, notes, replies, reports
+  cloud.json (token, path → page id)             D1: owners, pages, reports; per-page DO: notes, replies
 local server (already running for poll)
   cloud sync loop ──── GET /api/pages/:id/notes ─► long-poll (25 s) for notes after a cursor
   SessionStore.addUserBatch(author, hold, remote)
@@ -53,7 +53,7 @@ reviewer's browser ◄───────────────────�
 
 `publish` reuses `readArtifact` and `rewriteRuntime` (see `src/cli/export.js`):
 
-1. Replace the runtime `<script>` tag with `<script src="/rt/<cliVersion>/austere.js"></script>`. Add `/rt/<cliVersion>/mermaid.min.js` before it when the program uses `Mermaid(`. Add `/rt/<cliVersion>/packs/<id>.js` after it for each bundled pack the program calls (`implicitPacks`, as `export` inlines them). The runtime's own fallback, `/rt/<cliVersion>/packs/<id>/pack.js`, is not on the Worker's asset allow-list, so the tag must already have registered the pack.
+1. Replace the runtime `<script>` tag with `<script src="/rt/<cliVersion>/austere.js"></script>`. Mermaid is a bundled pack (austere-axi PR #46), so there is no separate `mermaid.min.js` tag. Add `/rt/<cliVersion>/packs/<id>.js` after the runtime for each bundled pack the program calls (`implicitPacks`, as `export` inlines them). The runtime's own fallback, `/rt/<cliVersion>/packs/<id>/pack.js`, is not on the Worker's asset allow-list, so the tag must already have registered the pack.
 2. Each installed pack the page declares is uploaded as a blob and gets a `<script src="/pk/<sha256>.js"></script>` tag after the runtime, so it registers before the runtime looks for it (the runtime would otherwise try the npm CDN, which the frame CSP blocks). `sha256` is the hex SHA-256 of the UTF-8 `pack.js`. A pack that is missing locally, installed at another version, or rebuilt since the page's hash was written is an error, because the hosted page can't fetch it from a CDN.
 3. Relative-path images (the `src` of `Image(alt, src)` and Markdown `![…](…)` links, ending in `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg` or `.avif`) are inlined as `data:` URLs. Other path-like strings, such as `FileTree` entries, stay text. As in the local server, only files in the page's own directory tree count, after resolving symlinks, with no dotfiles; anything else, or a missing file, is an error.
 4. Everything else in the file is byte-for-byte unchanged. Inlining relative images (step 3) is the one explicit exception beyond runtime tags: the hosted page has no file system to resolve them against. Otherwise this keeps the AGENTS.md rule that the served artifact equals the file except for runtime tags.
@@ -76,11 +76,11 @@ Implementation notes:
 
 ### Pinned runtime (`/rt/<version>/…`)
 
-The Worker proxies `https://cdn.jsdelivr.net/npm/austere-axi@<version>/dist/<asset>` and caches the result with the Cache API. Only versions at or above `MIN_CLI_VERSION` are allowed, and only an allow-listed set of asset paths (runtime, Mermaid, chrome JS/CSS, packs). Pages stay same-origin, and `script-src 'self'` holds. No R2 copy of the runtime is needed.
+The Worker proxies `https://cdn.jsdelivr.net/npm/austere-axi@<version>/dist/<asset>` and caches the result with the Cache API. Only versions at or above `MIN_CLI_VERSION` are allowed, and only an allow-listed set of asset paths (runtime, chrome JS/CSS, packs). Pages stay same-origin, and `script-src 'self'` holds. No R2 copy of the runtime is needed.
 
 `MIN_CLI_VERSION` is the first austere-axi release that ships chrome hosted mode and `publish`. Releasing it to npm is a human step for sid.kasat.
 
-Implementation notes: assets are `austere.js`, `mermaid.min.js`, `chrome/chrome.js`, `chrome/chrome.css` and `packs/<name>.js` (`<name>` is lowercase letters, digits and `-`). A pack is public as `packs/<name>.js` but lives in the npm package as `dist/packs/<name>/pack.js`, and the Worker maps between the two. Only 200 responses are cached; a missing version returns 404 and any other upstream failure 502. Responses are `immutable`, since a published version never changes.
+Implementation notes: assets are `austere.js`, `chrome/chrome.js`, `chrome/chrome.css` and `packs/<name>.js` (`<name>` is lowercase letters, digits and `-`). `mermaid.min.js` is not served, so `/rt/<v>/mermaid.min.js` is 404. A pack is public as `packs/<name>.js` but lives in the npm package as `dist/packs/<name>/pack.js`, and the Worker maps between the two. Only 200 responses are cached; a missing version returns 404 and any other upstream failure 502. Responses are `immutable`, since a published version never changes. `MIN_CLI_VERSION` is a single value in `wrangler.toml` (provisionally `0.9.0`, the next minor after the austere-axi version current when this was written); RLM-271 confirms it against the actual release.
 
 ### Hosted page
 
@@ -121,9 +121,6 @@ owners   (id TEXT PK, token_hash TEXT UNIQUE, created_at INT, blocked INT DEFAUL
 pages    (id TEXT PK, owner_id TEXT, title TEXT, cli_version TEXT, auto INT, bytes INT,
           packs TEXT DEFAULT '[]' /* JSON [{ sha256, name, version }] of uploaded packs: feeds the third-party warning and blob cleanup */,
           created_at INT, published_at INT, expires_at INT, taken_down INT DEFAULT 0)
-notes    (seq INTEGER PK AUTOINCREMENT, page_id TEXT, author TEXT, items TEXT /* JSON */,
-          ip_hash TEXT, at INT)
-replies  (seq INTEGER PK AUTOINCREMENT, page_id TEXT, text TEXT, at INT)
 reports  (id INTEGER PK AUTOINCREMENT, page_id TEXT, reason TEXT, ip_hash TEXT, at INT)
 limits   (key TEXT PK, window_start INT, count INT)          -- fixed-window rate limits
 blocked_ids (page_id TEXT PK)                                -- takedown tombstones
@@ -140,8 +137,8 @@ Owner routes need `Authorization: Bearer <token>`. They return JSON and are not 
 | `POST /api/owners` | Creates an owner and returns `201 { token }`. Rate-limited per IP. |
 | `POST /api/pages` | Creates a page from the upload body and returns `201 { id, url, expiresAt }`. |
 | `PUT /api/pages/:id` | Replaces the page (republish), resets `expires_at` and returns `{ id, url, expiresAt }`. Notes are kept. 404 when the page expired, was deleted or is another owner's. |
-| `DELETE /api/pages/:id` | `204`. Deletes the page, its page blobs, notes and replies at once, and any pack blob no other page references (checked against the `packs` column of the remaining pages). |
-| `GET /api/pages` | Lists the owner's live pages, newest first: `{ pages: [{ id, title, url, expiresAt, notes }] }`. |
+| `DELETE /api/pages/:id` | `204`. Deletes the page and its page blobs at once, and any pack blob no other page references (checked against the `packs` column of the remaining pages). Notes and replies are removed with the page's Durable Object when the notes ticket lands. |
+| `GET /api/pages` | Lists the owner's live pages, newest first: `{ pages: [{ id, title, url, expiresAt }] }`. The note count returns when notes land in the Durable Object. |
 | `GET /api/pages/:id/notes?after=<seq>&wait=25` | Long-poll. Returns `{ notes: [{ seq, author, items, at }], cursor }` once there are notes after `seq`, or empty after `wait` seconds (D1 is re-checked every 2 s). |
 | `POST /api/pages/:id/replies` | `{ text }`, an agent reply shown in the hosted conversation. |
 

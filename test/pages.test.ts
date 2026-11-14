@@ -25,7 +25,7 @@ describe("publish lifecycle", () => {
 
     const list = await call("/api/pages", { token });
     expect(await list.json()).toEqual({
-      pages: [{ id: body.id, title: "Plan", url: body.url, expiresAt: body.expiresAt, notes: 0 }],
+      pages: [{ id: body.id, title: "Plan", url: body.url, expiresAt: body.expiresAt }],
     });
 
     // Republish keeps the id and URL, replaces the content, resets the clock.
@@ -49,17 +49,13 @@ describe("publish lifecycle", () => {
     expect(await (await call("/api/pages", { token })).json()).toEqual({ pages: [] });
   });
 
-  it("deleting a page removes its notes and replies but keeps the rest", async () => {
+  it("deleting a page keeps other pages", async () => {
     const token = await newOwner();
     const a = (await publish(token)).body.id;
     const b = (await publish(token)).body.id;
-    for (const id of [a, b]) {
-      await env.DB.prepare("INSERT INTO notes (page_id, author, items, ip_hash, at) VALUES (?, 'x', '[]', 'h', 1)").bind(id).run();
-      await env.DB.prepare("INSERT INTO replies (page_id, text, at) VALUES (?, 'r', 1)").bind(id).run();
-    }
     await call(`/api/pages/${a}`, { method: "DELETE", token });
-    const left = await env.DB.prepare("SELECT page_id FROM notes UNION ALL SELECT page_id FROM replies").all<any>();
-    expect(left.results.map((r) => r.page_id)).toEqual([b, b]);
+    expect((await call(`/p/${a}`)).status).toBe(404);
+    expect((await call(`/p/${b}`)).status).toBe(200);
   });
 
   it("deleting a page drops pack blobs no other page references", async () => {
@@ -134,6 +130,7 @@ describe("upload validation", () => {
     ["newline before src", `<script\n  async\n  src="https://evil.example/x.js"></script>`],
     ["other runtime version", `<script src="/rt/9.9.9/austere.js"></script>`],
     ["runtime asset not on the allow-list", `<script src="/rt/${CLI}/cli.mjs"></script>`],
+    ["mermaid.min.js (Mermaid is a pack now)", `<script src="/rt/${CLI}/mermaid.min.js"></script>`],
     ["runtime path traversal", `<script src="/rt/${CLI}/packs/../../x.js"></script>`],
     ["runtime pack fallback path", `<script src="/rt/${CLI}/packs/shadcn/pack.js"></script>`],
     ["query string on a runtime asset", `<script src="/rt/${CLI}/austere.js?x=1"></script>`],
@@ -165,7 +162,7 @@ describe("upload validation", () => {
     const sha = await sha256Hex(code);
     const html = PAGE_HTML.replace(
       "</head>",
-      `<script src="/rt/${CLI}/mermaid.min.js"></script><script src="/rt/${CLI}/packs/shadcn.js"></script><script src="/pk/${sha}.js"></script></head>`,
+      `<script src="/rt/${CLI}/packs/shadcn.js"></script><script src="/pk/${sha}.js"></script></head>`,
     );
     const { res, body } = await publish(token, { html, packs: [{ sha256: sha, name: "@acme/charts", version: "1.2.0", code }] });
     expect(res.status).toBe(201);
@@ -201,9 +198,15 @@ describe("upload validation", () => {
 
   it("rejects a cliVersion below MIN_CLI_VERSION or not a release version", async () => {
     const token = await newOwner();
-    for (const v of ["0.4.0", "0.3.9", "1.0.0-rc.1", "latest", 5]) {
-      expect((await publish(token, { cliVersion: v })).res.status).toBe(400);
+    // 0.8.1 is the austere-axi release before `publish` existed.
+    for (const v of ["0.8.1", "0.4.0", "0.0.1", "1.0.0-rc.1", "latest", 5]) {
+      const { res, body } = await publish(token, { cliVersion: v, html: PAGE_HTML.replace(CLI, String(v)) });
+      expect(res.status, String(v)).toBe(400);
+      expect(body.error).toContain(env.MIN_CLI_VERSION);
     }
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM pages").first<any>()).n).toBe(0);
+    // The floor itself and anything above it, including a double-digit minor, are accepted.
+    expect((await publish(token)).res.status).toBe(201);
     expect((await publish(token, { cliVersion: "0.10.0", html: PAGE_HTML.replace(CLI, "0.10.0") })).res.status).toBe(201);
   });
 

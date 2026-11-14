@@ -3,7 +3,8 @@ import { env } from "cloudflare:workers";
 import worker from "../src/index";
 import { sha256Hex } from "../src/util";
 
-export const CLI = "0.4.1";
+/** The version floor: the one value in wrangler.toml, so tests follow it when RLM-271 changes it. */
+export const CLI = env.MIN_CLI_VERSION;
 export const ORIGIN = "https://austere.test";
 
 export async function call(path: string, init: RequestInit & { ip?: string; token?: string; json?: unknown } = {}): Promise<Response> {

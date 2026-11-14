@@ -99,11 +99,7 @@ async function deletePage(env: Env, request: Request, id: string): Promise<Respo
   await ownPage(env, owner, id);
   const row = await env.DB.prepare("SELECT packs FROM pages WHERE id = ?").bind(id).first<{ packs: string }>();
   await env.PAGES.delete(pageKey(id));
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM notes WHERE page_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM replies WHERE page_id = ?").bind(id),
-    env.DB.prepare("DELETE FROM pages WHERE id = ?").bind(id),
-  ]);
+  await env.DB.prepare("DELETE FROM pages WHERE id = ?").bind(id).run();
   // Pack blobs are shared by sha: drop one only when no remaining page lists it.
   for (const { sha256 } of JSON.parse(row?.packs ?? "[]") as PackMeta[]) {
     const used = await env.DB.prepare("SELECT 1 AS ok FROM pages, json_each(pages.packs) AS p WHERE json_extract(p.value, '$.sha256') = ? LIMIT 1")
@@ -117,13 +113,12 @@ async function deletePage(env: Env, request: Request, id: string): Promise<Respo
 async function listPages(env: Env, request: Request): Promise<Response> {
   const owner = await authenticate(env, request);
   const { results } = await env.DB.prepare(
-    `SELECT id, title, expires_at, (SELECT COUNT(*) FROM notes WHERE notes.page_id = pages.id) AS notes
-     FROM pages WHERE owner_id = ? AND taken_down = 0 AND expires_at > ? ORDER BY created_at DESC`,
+    "SELECT id, title, expires_at FROM pages WHERE owner_id = ? AND taken_down = 0 AND expires_at > ? ORDER BY created_at DESC",
   )
     .bind(owner.id, Date.now())
-    .all<{ id: string; title: string; expires_at: number; notes: number }>();
+    .all<{ id: string; title: string; expires_at: number }>();
   return json({
-    pages: results.map((r) => ({ id: r.id, title: r.title, url: pageUrl(request, r.id), expiresAt: r.expires_at, notes: r.notes })),
+    pages: results.map((r) => ({ id: r.id, title: r.title, url: pageUrl(request, r.id), expiresAt: r.expires_at })),
   });
 }
 

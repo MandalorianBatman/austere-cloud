@@ -3,8 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2026-08-01"
 
 [vars]
-# First austere-axi release with hosted chrome and `publish`. /rt/<v>/ and uploads reject older versions.
-MIN_CLI_VERSION = "0.4.1"
+# Lowest austere-axi version that uploads and /rt/<v>/ accept: the first release that ships `publish`.
+# The only place this value is set; tests read it from the binding. Provisional until RLM-271 confirms it at release.
+MIN_CLI_VERSION = "0.9.0"
 
 # Real ids are filled in by the deploy ticket; local dev and tests use local emulation.
 [[d1_databases]]

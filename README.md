@@ -20,7 +20,7 @@ Publish by hand (the CLI's `publish` command does this for you):
 
 ```sh
 TOKEN=$(curl -s -X POST localhost:8787/api/owners | jq -r .token)
-jq -n --rawfile html page.html '{cliVersion:"0.4.1", title:"Plan", html:$html}' | gzip |
+jq -n --rawfile html page.html '{cliVersion:"0.9.0", title:"Plan", html:$html}' | gzip |
   curl -s -X POST localhost:8787/api/pages -H "authorization: Bearer $TOKEN" \
     -H 'content-encoding: gzip' -H 'content-type: application/json' --data-binary @-
 ```

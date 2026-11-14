@@ -1,5 +1,6 @@
--- Every table the service needs, in one migration, so tickets that add notes,
--- replies, reports and expiry don't collide on migration numbers.
+-- Every D1 table the service needs, in one migration, so later tickets that add
+-- reports and expiry don't collide on migration numbers. Notes and replies live in
+-- a per-page Durable Object, not here.
 -- All timestamps are Unix milliseconds.
 
 CREATE TABLE owners (
@@ -24,24 +25,6 @@ CREATE TABLE pages (
 );
 CREATE INDEX pages_owner ON pages (owner_id);
 CREATE INDEX pages_expires ON pages (expires_at);
-
-CREATE TABLE notes (
-  seq      INTEGER PRIMARY KEY AUTOINCREMENT,
-  page_id  TEXT NOT NULL,
-  author   TEXT NOT NULL,
-  items    TEXT NOT NULL,             -- JSON
-  ip_hash  TEXT NOT NULL,
-  at       INTEGER NOT NULL
-);
-CREATE INDEX notes_page ON notes (page_id, seq);
-
-CREATE TABLE replies (
-  seq      INTEGER PRIMARY KEY AUTOINCREMENT,
-  page_id  TEXT NOT NULL,
-  text     TEXT NOT NULL,
-  at       INTEGER NOT NULL
-);
-CREATE INDEX replies_page ON replies (page_id, seq);
 
 CREATE TABLE reports (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
