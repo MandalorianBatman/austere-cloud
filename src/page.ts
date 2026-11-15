@@ -283,7 +283,7 @@ export class PageObject extends DurableObject<Env> {
     return {
       apply: () => [this.put(page)],
       after: async () => {
-        if (!page.presence) this.endPresence();
+        if (!page.presence) await this.endPresence();
         // Sockets that came in through the open link lose access when it closes.
         if (page.unlisted) return;
         for (const s of this.ctx.getWebSockets()) {
@@ -482,12 +482,14 @@ export class PageObject extends DurableObject<Env> {
   /** The socket's `hello`: the roster to it (the others, then its own entry, `self`), its entry to the others. */
   private async join(ws: WebSocket, hello: HelloFrame): Promise<void> {
     const state = attachment(ws);
-    const name = state.viewer?.name ?? viewerName(state.role, hello.name);
+    // A second hello may carry a name the reviewer has just given (the chrome's name prompt).
+    const name = viewerName(state.role, hello.name);
     // Another socket under the same name shares its colour; other names present keep theirs.
-    const present = this.viewers().map(([, v]) => v);
-    const colour = present.find((v) => v.name === name)?.colour ?? colourFor(name, new Set(present.map((v) => v.colour)));
+    const others = this.viewers().flatMap(([s, v]) => (s === ws ? [] : [v]));
+    const colour =
+      state.viewer?.name === name ? state.viewer.colour : (others.find((v) => v.name === name)?.colour ?? colourFor(name, new Set(others.map((v) => v.colour))));
     const viewer: ViewerState = state.viewer
-      ? { ...state.viewer, status: hello.status }
+      ? { ...state.viewer, name, colour, status: hello.status }
       : { id: randomId(8), name, colour, role: state.role, status: hello.status, focus: null, last: Date.now() };
     this.setViewer(ws, viewer);
     for (const [s, v] of this.viewers()) if (s !== ws && !v.gone) this.send(ws, helloFrame(v, false));
@@ -505,10 +507,11 @@ export class PageObject extends DurableObject<Env> {
   }
 
   /** A `publish` turned presence off: every viewer gets `bye` for every viewer, then nothing more. */
-  private endPresence(): void {
+  private async endPresence(): Promise<void> {
     const viewers = this.viewers();
     for (const [ws] of viewers) this.setViewer(ws, undefined);
     for (const [ws] of viewers) for (const [, v] of viewers) this.send(ws, byeFrame(v.id));
+    await this.ctx.storage.deleteAlarm();
   }
 
   private async scheduleExpiry(): Promise<void> {

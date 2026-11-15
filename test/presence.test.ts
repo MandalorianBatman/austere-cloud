@@ -102,6 +102,19 @@ describe("roster", () => {
     expect((await join(await reviewerSocket(id), "Bo")).at(-1)!.viewer.colour).toBe(bo);
   });
 
+  it("a second hello renames the viewer under the same id", async () => {
+    const { id } = await page();
+    const [a, b] = [await reviewerSocket(id), await reviewerSocket(id)];
+    const first = (await join(a)).at(-1)!.viewer;
+    expect(first.name).toBe("Reviewer");
+    await join(b, "B");
+    await a.take(isHello);
+    // The name prompt answered after joining.
+    const renamed = (await join(a, "Ana")).at(-1)!.viewer;
+    expect(renamed).toMatchObject({ id: first.id, name: "Ana" });
+    expect(await b.take((f) => isHello(f) && f.viewer.id === first.id)).toMatchObject({ viewer: { name: "Ana", colour: renamed.colour } });
+  });
+
   it("a socket gets no presence until its own hello", async () => {
     const { id } = await page();
     const [a, quiet] = [await reviewerSocket(id), await reviewerSocket(id)];
