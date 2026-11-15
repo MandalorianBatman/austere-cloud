@@ -2,12 +2,16 @@ name = "austere-cloud"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 
+# The whole hostname goes to this Worker; Cloudflare creates the proxied DNS record.
+routes = [{ pattern = "austere.blundertech.com", custom_domain = true }]
+
 [vars]
 # Lowest austere-axi version that uploads and /rt/<v>/ accept: the first release that ships `publish`.
-# The only place this value is set; tests read it from the binding. Provisional until RLM-271 confirms it at release.
+# The only place this value is set; tests read it from the binding.
 MIN_CLI_VERSION = "0.9.0"
 
-# Real ids are filled in by the deploy ticket; local dev and tests use local emulation.
+# The placeholder id stays here: .github/workflows/deploy.yml looks the real database up by name and
+# substitutes it for the deploy. Local dev and tests use local emulation.
 [[d1_databases]]
 binding = "DB"
 database_name = "austere-cloud"
@@ -18,8 +22,9 @@ migrations_dir = "migrations"
 binding = "PAGES"
 bucket_name = "austere-cloud-pages"
 
-# Secrets (wrangler secret put): IP_HMAC_KEY; WORKOS_CLIENT_ID, WORKOS_API_KEY and WORKOS_COOKIE_PASSWORD
-# (32+ characters) turn accounts on (RLM-414, keys from RLM-415); ADMIN_TOKEN and ADMIN_EMAIL arrive with the admin ticket.
+# Secrets: IP_HMAC_KEY, WORKOS_CLIENT_ID, WORKOS_API_KEY and WORKOS_COOKIE_PASSWORD (32+ characters) are GitHub
+# Actions secrets that the deploy workflow uploads with the Worker. The three WORKOS_* turn accounts on (RLM-414,
+# keys from RLM-415); without them /auth/* answers 503. ADMIN_TOKEN and ADMIN_EMAIL arrive with the admin ticket.
 # Optional vars: WORKOS_API_BASE (default https://api.workos.com), WORKOS_ISSUER (accepted access-token issuers, comma-separated).
 # For `wrangler dev`, copy .dev.vars.example to .dev.vars.
 
