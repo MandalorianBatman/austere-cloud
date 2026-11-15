@@ -4,7 +4,7 @@
 // `parseClientFrame` from austere-axi/sync; the wire protocol is in austere-axi's
 // docs/hosted-share-links.md, "Sync, access and presence".
 import { DurableObject } from "cloudflare:workers";
-import { MUTATION_ROLE, SUBPROTOCOL, SYNC_VERSION, parseClientFrame } from "austere-axi/sync";
+import { MUTATION_ROLE, SUBPROTOCOL, SYNC_VERSION, grantId, parseClientFrame } from "austere-axi/sync";
 import type {
   AckFrame,
   AclRow,
@@ -402,7 +402,16 @@ export class PageObject extends DurableObject<Env> {
     const taken = this.sql.exec<{ name: string }>("SELECT name FROM invites WHERE token_hash = ?", args.tokenHash).toArray()[0];
     if (taken && taken.name !== args.name) return fail("invalid", "grant.tokenHash belongs to another invite");
     const sameToken = taken?.name === args.name ? this.row<AclRow>("acl", args.name) : null;
-    const acl = { type: "acl", id: args.name, name: args.name, grantedAt: sameToken?.grantedAt ?? now, expiresAt: args.expiresAt, revoked: false } as const;
+    // `grant` names the token by a hash prefix, so owner peers can tell whose link is live; never the token or the full hash.
+    const acl = {
+      type: "acl",
+      id: args.name,
+      name: args.name,
+      grantedAt: sameToken?.grantedAt ?? now,
+      expiresAt: args.expiresAt,
+      revoked: false,
+      grant: grantId(args.tokenHash),
+    } as const;
     return {
       apply: () => {
         this.sql.exec(

@@ -37,7 +37,7 @@ Owner routes take `Authorization: Bearer <token>`. A missing or unknown token is
 
 ## Access (invites)
 
-- Invites live in the page object's `invites` table: name, base64url SHA-256 of the token, expiry, revoked. Reviewers see no `acl` rows and the token hash is never in a row.
+- Invites live in the page object's `invites` table: name, base64url SHA-256 of the token, expiry, revoked. Reviewers see no `acl` rows. The token hash is never in a row; the row's `grant` is `grantId(tokenHash)` from `austere-axi/sync` (its first 16 characters), which names the current token so an owner peer can tell whether its own link is the live one.
 - A reviewer socket or asset token is let in by a live invite (not revoked, unexpired) whose hash matches; otherwise, on an `unlisted` page, as the open link; otherwise 403 `forbidden`. A wrong token on an unlisted page is the open link. The owner token is not accepted on reviewer routes.
 - `grant` creates an invite, or replaces its token and expiry (and un-revokes it). A new token closes the sockets that came in with the old one (`error` `forbidden`, 1008); the same token only moves the expiry. The `acl` row's `grantedAt` is when the current token was first granted: re-granting the same token keeps it, a new token sets it. A past `expiresAt`, or a `tokenHash` another name holds, is `invalid`.
 - `revoke` marks the invite revoked, writes its `acl` row with `revoked: true` and closes its sockets (`error` `forbidden`, 1008). An unknown name is `invalid`; revoking twice changes nothing.

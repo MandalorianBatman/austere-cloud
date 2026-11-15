@@ -17,7 +17,7 @@ npm run dev         # http://localhost:8787
 npm run smoke       # in another shell: publish, two invites, notes, replies, idempotency, live revoke, delete
 ```
 
-`austere-axi/sync` is not on npm yet. Until the release that ships it (RLM-271), `package.json` installs it from `vendor/austere-axi-9f88d27.tgz`, an `npm pack` of austere-axi at commit `9f88d27` (the merge of RLM-313). To refresh it, run `npm ci && npm run build && npm pack` in an austere-axi checkout and install the tarball here; once the release is out, depend on it from npm and delete `vendor/`.
+`austere-axi/sync` is not on npm yet. Until the release that ships it (RLM-271), `package.json` installs it from `vendor/austere-axi-b6fb033.tgz`, an `npm pack` of austere-axi at commit `b6fb033` (RLM-314, austere-axi#56: the `acl` row's `grant` and `grantId`). Merge austere-axi#56 before this repo's PR that depends on it. To refresh it, run `npm ci && npm run build && npm pack` in an austere-axi checkout and install the tarball here; once the release is out, depend on it from npm and delete `vendor/`.
 
 ## Publish by hand
 

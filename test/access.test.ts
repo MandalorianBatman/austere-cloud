@@ -48,6 +48,8 @@ describe("invite-only by default", () => {
     const acl = (await owner.changes()).rows[0] as AclRow;
     expect(acl).toMatchObject({ type: "acl", id: "Ana", name: "Ana", revoked: false, expiresAt: null });
     expect(JSON.stringify(acl)).not.toContain(await sha256B64url(ana)); // the hash never leaves the server
+    expect(acl.grant).toBe((await sha256B64url(ana)).slice(0, 16)); // only its grant id, a prefix, names the token
+    expect(JSON.stringify(acl)).not.toContain(ana);
 
     const res = await assetToken(id, ana);
     expect(res.status).toBe(200);
@@ -128,7 +130,11 @@ describe("invite-only by default", () => {
     await owner.mutate("grant", { name: "Ana", tokenHash, expiresAt: null });
     expect(((await owner.changes()).rows[0] as AclRow).grantedAt).toBe(first.grantedAt);
     await owner.mutate("grant", { name: "Ana", tokenHash: await sha256B64url("b".repeat(43)), expiresAt: null });
-    expect(((await owner.changes()).rows[0] as AclRow).grantedAt).toBeGreaterThan(first.grantedAt);
+    const other = (await owner.changes()).rows[0] as AclRow;
+    expect(other.grantedAt).toBeGreaterThan(first.grantedAt);
+    // The grant id follows the token: same token, same id; a new token, a new id (an owner peer's old link is dead).
+    expect(same.grant).toBe(first.grant);
+    expect(other.grant).not.toBe(first.grant);
   });
 
   it("grant rejects a past expiry and a token hash another invite holds", async () => {
