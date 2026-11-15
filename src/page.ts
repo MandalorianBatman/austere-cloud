@@ -483,9 +483,12 @@ export class PageObject extends DurableObject<Env> {
   private async join(ws: WebSocket, hello: HelloFrame): Promise<void> {
     const state = attachment(ws);
     const name = state.viewer?.name ?? viewerName(state.role, hello.name);
+    // Another socket under the same name shares its colour; other names present keep theirs.
+    const present = this.viewers().map(([, v]) => v);
+    const colour = present.find((v) => v.name === name)?.colour ?? colourFor(name, new Set(present.map((v) => v.colour)));
     const viewer: ViewerState = state.viewer
       ? { ...state.viewer, status: hello.status }
-      : { id: randomId(8), name, colour: colourFor(name), role: state.role, status: hello.status, focus: null, last: Date.now() };
+      : { id: randomId(8), name, colour, role: state.role, status: hello.status, focus: null, last: Date.now() };
     this.setViewer(ws, viewer);
     for (const [s, v] of this.viewers()) if (s !== ws && !v.gone) this.send(ws, helloFrame(v, false));
     this.send(ws, helloFrame(viewer, true));

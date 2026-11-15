@@ -88,6 +88,20 @@ describe("roster", () => {
     expect(b.frames.filter(isPresence)).toEqual([]);
   });
 
+  it("names present get different colours even when their hashes clash", async () => {
+    const { token, id } = await page();
+    const owner = await ownerSocket(token, id);
+    const ownerColour = (await join(owner)).at(-1)!.viewer.colour;
+    // "Bo" hashes to the owner's colour; alone on a page it would get it.
+    const solo = await page();
+    const alone = (await join(await reviewerSocket(solo.id), "Bo")).at(-1)!.viewer.colour;
+    expect(alone).toBe(ownerColour);
+    const bo = (await join(await reviewerSocket(id), "Bo")).at(-1)!.viewer.colour;
+    expect(bo).not.toBe(ownerColour);
+    // A second Bo socket shares Bo's colour.
+    expect((await join(await reviewerSocket(id), "Bo")).at(-1)!.viewer.colour).toBe(bo);
+  });
+
   it("a socket gets no presence until its own hello", async () => {
     const { id } = await page();
     const [a, quiet] = [await reviewerSocket(id), await reviewerSocket(id)];

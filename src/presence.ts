@@ -24,14 +24,22 @@ export const EXPIRE_MS = 60_000;
 /** Presence frames per second per socket; more are dropped. */
 export const FRAMES_PER_SECOND = 10;
 
-// Readable on the chrome's light and dark themes; the chrome only displays them.
-const PALETTE = ["#e5484d", "#f76b15", "#ffc53d", "#46a758", "#12a594", "#0090ff", "#3e63dd", "#8e4ec6", "#d6409f", "#978365"];
+// White text reads on each; the chrome only displays them.
+const PALETTE = ["#e5484d", "#f76b15", "#9e7c00", "#46a758", "#12a594", "#0090ff", "#3e63dd", "#8e4ec6", "#d6409f", "#978365"];
 
-/** A name's colour: the same name always gets the same colour. */
-export function colourFor(name: string): string {
+/**
+ * A name's colour: from a hash of the name, so the same name gets the same colour, moved on to
+ * the next free one when another viewer present already has it (`taken`).
+ */
+export function colourFor(name: string, taken: ReadonlySet<string> = new Set()): string {
   let h = 0x811c9dc5; // FNV-1a
   for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
-  return PALETTE[(h >>> 0) % PALETTE.length];
+  const start = (h >>> 0) % PALETTE.length;
+  for (let i = 0; i < PALETTE.length; i++) {
+    const c = PALETTE[(start + i) % PALETTE.length];
+    if (!taken.has(c)) return c;
+  }
+  return PALETTE[start];
 }
 
 /** A self-declared name: trimmed, at most LIMITS.nameChars characters, `Reviewer` when empty. */
