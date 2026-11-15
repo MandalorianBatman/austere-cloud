@@ -4,12 +4,14 @@
 // `parseClientFrame` from austere-axi/sync; the wire protocol is in austere-axi's
 // docs/hosted-share-links.md, "Sync, access and presence".
 import { DurableObject } from "cloudflare:workers";
-import { LIMITS, MUTATION_ROLE, SUBPROTOCOL, SYNC_VERSION, parseClientFrame } from "austere-axi/sync";
+import { MUTATION_ROLE, SUBPROTOCOL, SYNC_VERSION, parseClientFrame } from "austere-axi/sync";
 import type {
   AckFrame,
   ChangesFrame,
+  ClientPresence,
   ErrorCode,
   ErrorFrame,
+  HelloFrame,
   Mutation,
   MutationArgs,
   MutationKey,
@@ -19,11 +21,15 @@ import type {
   Role,
   Row,
   ServerFrame,
+  ServerPresence,
   SyncError,
+  ViewerBye,
+  ViewerHello,
 } from "austere-axi/sync";
 import type { Env } from "./env";
 import { RATE_LIMITS, RETENTION_MS, take } from "./limits";
 import { HTML_TYPE, JS_TYPE, objectKey, scriptSrcError, setPageObjects } from "./objects";
+import { EXPIRE_MS, FRAMES_PER_SECOND, colourFor, declaredName, viewerName, type ViewerState } from "./presence";
 import { versionAllowed } from "./runtime";
 import { IDENTITY_HEADER, refusal, type Identity } from "./sync";
 import { randomId } from "./util";
@@ -42,6 +48,10 @@ interface SocketState {
   live: boolean;
   /** A reviewer let in only because the page was unlisted: a publish that clears `unlisted` closes it. */
   viaUnlisted?: boolean;
+  /** Set by the socket's first `hello`, removed by `bye`, close, or a `publish` that turns presence off. */
+  viewer?: ViewerState;
+  /** Presence frames in the current second (epoch seconds), for FRAMES_PER_SECOND. */
+  rate?: { second: number; count: number };
 }
 
 /** A mutation either fails, or is applied by `apply` inside the storage transaction. */
@@ -104,11 +114,13 @@ export class PageObject extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    this.touch(ws);
     if (typeof message !== "string") return this.send(ws, errorFrame("invalid", "frames are JSON text"));
     const parsed = parseClientFrame(message);
     if (!parsed.ok) {
       if (parsed.error.code === "upgrade_required") {
         this.send(ws, errorFrame(parsed.error.code, parsed.error.message));
+        this.leave(ws);
         return ws.close(1008, "upgrade required");
       }
       // A rejected mutation whose key is readable gets an ack, so its sender can drop it.
@@ -124,7 +136,15 @@ export class PageObject extends DurableObject<Env> {
     const frame = parsed.value;
     if (frame.t === "pull") return this.pull(ws, frame.after);
     if (frame.t === "mutation") return this.serial(ws, () => this.mutate(ws, frame));
-    // Presence frames (hello/status/focus/bye) arrive with RLM-315; until then they are dropped.
+    return this.presence(ws, frame);
+  }
+
+  webSocketClose(ws: WebSocket): void {
+    this.leave(ws);
+  }
+
+  webSocketError(ws: WebSocket): void {
+    this.leave(ws);
   }
 
   /** Runs `task` after every earlier mutation. An unexpected failure closes the socket (1011), so the client re-sends. */
@@ -132,6 +152,7 @@ export class PageObject extends DurableObject<Env> {
     const run = this.queue.then(task).catch((e) => {
       console.error(e);
       try {
+        this.leave(ws);
         ws.close(1011, "internal error");
       } catch {
         // already closing
@@ -261,12 +282,14 @@ export class PageObject extends DurableObject<Env> {
     await setPageObjects(this.env, id, [args.html, ...packs.map((p) => p.sha256)]);
     return {
       apply: () => [this.put(page)],
-      // Sockets that came in through the open link lose access when it closes.
       after: async () => {
+        if (!page.presence) await this.endPresence();
+        // Sockets that came in through the open link lose access when it closes.
         if (page.unlisted) return;
         for (const s of this.ctx.getWebSockets()) {
           if (!attachment(s).viaUnlisted) continue;
           this.send(s, errorFrame("forbidden", "this page now needs an invite"));
+          this.leave(s);
           s.close(1008, "forbidden");
         }
       },
@@ -279,7 +302,7 @@ export class PageObject extends DurableObject<Env> {
     const id = this.pageId();
     const retry = await take(this.env, `note:${id}:${state.ipHash}`, RATE_LIMITS.notesPerIpPerPage);
     if (retry !== null) return fail("rate_limited", "note limit reached for this page; try again later", retry);
-    const author = [...(args.name ?? "").trim()].slice(0, LIMITS.nameChars).join("") || "Reviewer";
+    const author = declaredName(args.name);
     const note = { type: "note", id: randomId(12), author, items: args.items, at: Date.now(), state: page.auto ? "released" : "held" } as const;
     return {
       apply: () => [this.put(note)],
@@ -314,6 +337,7 @@ export class PageObject extends DurableObject<Env> {
       for (const s of sockets) this.send(s, frame);
     }
     for (const s of sockets) s.close(1000, "page deleted");
+    await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     this.init();
   }
@@ -393,6 +417,122 @@ export class PageObject extends DurableObject<Env> {
       // The socket is closing; the client pulls again after it reconnects.
     }
   }
+
+  // ── presence: socket attachments only, never the op log or the rows ──
+
+  /** Presence runs while the published page has `presence: true`. */
+  private presenceOn(): boolean {
+    const page = this.pageRow();
+    return !!page && page.presence && !page.deleted;
+  }
+
+  /** Every socket that is a viewer, with its viewer. */
+  private viewers(): [WebSocket, ViewerState][] {
+    const out: [WebSocket, ViewerState][] = [];
+    for (const ws of this.ctx.getWebSockets()) {
+      const v = attachment(ws).viewer;
+      if (v) out.push([ws, v]);
+    }
+    return out;
+  }
+
+  /** Sends a presence frame to every viewer but `from`. */
+  private toOthers(from: WebSocket, frame: ServerPresence): void {
+    for (const [ws] of this.viewers()) if (ws !== from) this.send(ws, frame);
+  }
+
+  private setViewer(ws: WebSocket, viewer: ViewerState | undefined): void {
+    const { viewer: _, ...rest } = attachment(ws);
+    ws.serializeAttachment(viewer ? { ...rest, viewer } : rest);
+  }
+
+  /** Any frame from a viewer is its heartbeat. A viewer that had gone silent is announced again. */
+  private touch(ws: WebSocket): void {
+    const v = attachment(ws).viewer;
+    if (!v) return;
+    const { gone, ...viewer } = v;
+    viewer.last = Date.now();
+    this.setViewer(ws, viewer);
+    if (gone) {
+      this.toOthers(ws, helloFrame(viewer, false));
+      this.ctx.waitUntil(this.scheduleExpiry());
+    }
+  }
+
+  private async presence(ws: WebSocket, frame: ClientPresence): Promise<void> {
+    const state = attachment(ws);
+    const second = Math.floor(Date.now() / 1000);
+    const count = state.rate?.second === second ? state.rate.count + 1 : 1;
+    ws.serializeAttachment({ ...state, rate: { second, count } } satisfies SocketState);
+    if (count > FRAMES_PER_SECOND || !this.presenceOn()) return;
+    if (frame.t === "hello") return this.join(ws, frame);
+    if (frame.t === "bye") return this.leave(ws);
+    const viewer = state.viewer;
+    if (!viewer) return; // no presence before `hello`
+    if (frame.t === "status") {
+      if (frame.status === viewer.status) return; // a heartbeat
+      this.setViewer(ws, { ...viewer, status: frame.status });
+      return this.toOthers(ws, { v: SYNC_VERSION, t: "status", viewer: viewer.id, status: frame.status });
+    }
+    if (frame.statement === viewer.focus) return;
+    this.setViewer(ws, { ...viewer, focus: frame.statement });
+    this.toOthers(ws, { v: SYNC_VERSION, t: "focus", viewer: viewer.id, statement: frame.statement });
+  }
+
+  /** The socket's `hello`: the roster to it (the others, then its own entry, `self`), its entry to the others. */
+  private async join(ws: WebSocket, hello: HelloFrame): Promise<void> {
+    const state = attachment(ws);
+    // A second hello may carry a name the reviewer has just given (the chrome's name prompt).
+    const name = viewerName(state.role, hello.name);
+    // Another socket under the same name shares its colour; other names present keep theirs.
+    const others = this.viewers().flatMap(([s, v]) => (s === ws ? [] : [v]));
+    const colour =
+      state.viewer?.name === name ? state.viewer.colour : (others.find((v) => v.name === name)?.colour ?? colourFor(name, new Set(others.map((v) => v.colour))));
+    const viewer: ViewerState = state.viewer
+      ? { ...state.viewer, name, colour, status: hello.status }
+      : { id: randomId(8), name, colour, role: state.role, status: hello.status, focus: null, last: Date.now() };
+    this.setViewer(ws, viewer);
+    for (const [s, v] of this.viewers()) if (s !== ws && !v.gone) this.send(ws, helloFrame(v, false));
+    this.send(ws, helloFrame(viewer, true));
+    this.toOthers(ws, helloFrame(viewer, false));
+    await this.scheduleExpiry();
+  }
+
+  /** The socket stops being a viewer (`bye`, close): the others get `bye`. */
+  private leave(ws: WebSocket): void {
+    const viewer = attachment(ws).viewer;
+    if (!viewer) return;
+    this.setViewer(ws, undefined);
+    if (!viewer.gone) this.toOthers(ws, byeFrame(viewer.id));
+  }
+
+  /** A `publish` turned presence off: every viewer gets `bye` for every viewer, then nothing more. */
+  private async endPresence(): Promise<void> {
+    const viewers = this.viewers();
+    for (const [ws] of viewers) this.setViewer(ws, undefined);
+    for (const [ws] of viewers) for (const [, v] of viewers) this.send(ws, byeFrame(v.id));
+    await this.ctx.storage.deleteAlarm();
+  }
+
+  private async scheduleExpiry(): Promise<void> {
+    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + EXPIRE_MS);
+  }
+
+  /** Viewers silent for EXPIRE_MS go: the others get `bye`. Runs while any viewer is present. */
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    let next = Infinity;
+    for (const [ws, v] of this.viewers()) {
+      if (v.gone) continue;
+      if (now - v.last < EXPIRE_MS) {
+        next = Math.min(next, v.last + EXPIRE_MS);
+        continue;
+      }
+      this.setViewer(ws, { ...v, gone: true });
+      this.toOthers(ws, byeFrame(v.id));
+    }
+    if (next < Infinity) await this.ctx.storage.setAlarm(next);
+  }
 }
 
 function attachment(ws: WebSocket): SocketState {
@@ -403,6 +543,14 @@ function ackFrame(key: MutationKey, error?: SyncError): AckFrame {
   const frame: AckFrame = { v: SYNC_VERSION, t: "ack", clientId: key.clientId, n: key.n };
   if (error) frame.error = error;
   return frame;
+}
+
+function helloFrame(v: ViewerState, self: boolean): ViewerHello {
+  return { v: SYNC_VERSION, t: "hello", viewer: { id: v.id, name: v.name, colour: v.colour, role: v.role }, status: v.status, focus: v.focus, self };
+}
+
+function byeFrame(viewer: string): ViewerBye {
+  return { v: SYNC_VERSION, t: "bye", viewer };
 }
 
 function errorFrame(code: ErrorCode, message: string): ErrorFrame {

@@ -51,9 +51,22 @@ SQLite tables, all private to the object:
 - `addNote` needs a published page and counts 60 per hour per `ip_hash` per page. `author` is `name`, trimmed and cut to 40 characters (`LIMITS.nameChars`), or `Reviewer`. The note is `released` on an `auto` page, else `held`. It also bumps `pages.notes` in D1.
 - `releaseNote` / `discardNote` change a `held` note and leave a settled one alone; an unknown note is `invalid`. `addReply` adds a `reply` row.
 - `delete` removes the D1 row and the page's object references (deleting unreferenced objects), sends the `page` row with `deleted: true` to every socket, closes them with 1000 and deletes the object's storage.
-- `grant` and `revoke` answer `invalid` until RLM-314. Presence frames are accepted and dropped until RLM-315.
+- `grant` and `revoke` answer `invalid` until RLM-314.
 - `pull` sends rows after the cursor in frames of 500 (`more: true` on all but the last; `reset: true` when the cursor is ahead of the counter). Reviewers never get `acl` rows; their live frames still carry the page's counter.
 - Socket identity and the "has pulled" flag live in the socket attachment, so they survive hibernation.
+
+## Presence
+
+`src/presence.ts` holds the rules; the page object holds the roster. Nothing about presence touches SQLite: each viewer lives in its socket's attachment (`viewer: { id, name, colour, role, status, focus, last }`), so it survives hibernation and goes with the socket.
+
+- Runs while the `page` row has `presence: true` and is not deleted. Otherwise every presence frame is dropped, including on an owner socket before the first `publish`. A `publish` with `presence: false` sends every viewer a `bye` for every viewer and clears the roster.
+- `hello` makes the socket a viewer. A second `hello` keeps the id, updates `status` and the name (the chrome sends one when its name prompt is answered), and re-sends the roster. The joiner gets a `hello` for each other viewer, then its own with `self: true`; the others get its `hello`. `id` is 8 random bytes, base64url, per socket.
+- Names: the owner is `Owner`; a reviewer is `hello.name`, trimmed, cut to 40 characters, `Reviewer` when empty (`viewerName`). RLM-314 makes an invited socket's name its invite name, in `viewerName` only.
+- Colour: FNV-1a of the name into a 10-colour palette, moved on to the next colour no viewer present has. Another socket under a name already present gets that name's colour. Alone, a name always gets the same colour.
+- `status` and `focus` are sent to the others only when they change; a repeated `status` is just the heartbeat. A socket gets no presence frames before its own `hello`, and none of its own changes back.
+- Any frame from a viewer (presence, `pull`, mutation) counts as its heartbeat. An alarm runs while viewers are present; a viewer silent for 60 s is marked gone and the others get its `bye`. Its next frame brings it back under the same id with a `hello` to the others. A gone viewer still receives presence, so its roster stays current.
+- `bye`, a closed or errored socket, and every server-side close (1008, 1011) send `bye` to the others. `delete` closes everyone, so it sends none.
+- More than 10 presence frames in one second from one socket are dropped.
 
 ## Publish rules
 
@@ -70,6 +83,6 @@ The `<script src>` check is the one from the first slice, applied to the HTML ob
 | What | Ticket |
 |---|---|
 | Invites (`grant`, `revoke`, `acl` rows), `assetToken`, per-invite note limits | RLM-314 |
-| Presence (`hello`, `status`, `focus`, `bye`) | RLM-315 |
+| Presence relay to the local review page (SSE), invite names on the roster | RLM-270, RLM-314 |
 | Retention cron, unnamed-object cleanup, report, takedown (and closing open sockets on takedown) | RLM-269 |
 | `MIN_CLI_VERSION` confirmed, deploy, `austere-axi/sync` from npm | RLM-271 |
