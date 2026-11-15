@@ -4,9 +4,10 @@
 // `parseClientFrame` from austere-axi/sync; the wire protocol is in austere-axi's
 // docs/hosted-share-links.md, "Sync, access and presence".
 import { DurableObject } from "cloudflare:workers";
-import { MUTATION_ROLE, SUBPROTOCOL, SYNC_VERSION, parseClientFrame } from "austere-axi/sync";
+import { MUTATION_ROLE, SUBPROTOCOL, SYNC_VERSION, grantId, parseClientFrame } from "austere-axi/sync";
 import type {
   AckFrame,
+  AclRow,
   ChangesFrame,
   ClientPresence,
   ErrorCode,
@@ -32,12 +33,14 @@ import { HTML_TYPE, JS_TYPE, objectKey, scriptSrcError, setPageObjects } from ".
 import { EXPIRE_MS, FRAMES_PER_SECOND, colourFor, declaredName, viewerName, type ViewerState } from "./presence";
 import { versionAllowed } from "./runtime";
 import { IDENTITY_HEADER, refusal, type Identity } from "./sync";
-import { randomId } from "./util";
+import { randomId, sha256B64url } from "./util";
 
 /** Rows per `changes` frame of a pull. */
 export const PULL_BATCH = 500;
 const MAX_PACKS = 16;
 const MAX_TITLE = 200;
+/** How long an asset token (the sandboxed frame's credential) is valid. */
+export const ASSET_TOKEN_MS = 10 * 60 * 1000;
 
 /** What each socket's attachment holds; it survives hibernation. */
 interface SocketState {
@@ -46,6 +49,8 @@ interface SocketState {
   ipHash: string;
   /** The socket finished a pull and gets live `changes` frames. */
   live: boolean;
+  /** A reviewer let in by an invite: its name, token hash and expiry. Revoke, re-grant or expiry closes the socket. */
+  invite?: { name: string; hash: string; expiresAt: number | null };
   /** A reviewer let in only because the page was unlisted: a publish that clears `unlisted` closes it. */
   viaUnlisted?: boolean;
   /** Set by the socket's first `hello`, removed by `bye`, close, or a `publish` that turns presence off. */
@@ -53,6 +58,12 @@ interface SocketState {
   /** Presence frames in the current second (epoch seconds), for FRAMES_PER_SECOND. */
   rate?: { second: number; count: number };
 }
+
+/** Who may read a page as a reviewer: an invite (by name), the open link, or nobody (`status`). */
+export type ReviewerAccess = { invite: { name: string; hash: string; expiresAt: number | null } | null } | { status: 403 | 404; message: string };
+
+/** The answer to `POST /p/:id/asset-token`. */
+export type AssetTokenAnswer = { token: string; expiresAt: number; name: string | null } | { status: 403 | 404; message: string };
 
 /** A mutation either fails, or is applied by `apply` inside the storage transaction. */
 type Outcome = { error: SyncError } | { apply: () => Row[]; after?: () => Promise<void> };
@@ -87,6 +98,12 @@ export class PageObject extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS rows (type TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL UNIQUE, body TEXT NOT NULL, PRIMARY KEY (type, id));
       -- The answer given to each (clientId, n); error is NULL when it was applied.
       CREATE TABLE IF NOT EXISTS acks (client_id TEXT NOT NULL, n INTEGER NOT NULL, error TEXT, PRIMARY KEY (client_id, n));
+      -- Invites by name. Only the token's SHA-256 (base64url) is stored, and it never leaves the server.
+      CREATE TABLE IF NOT EXISTS invites (
+        name TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, expires_at INTEGER, revoked INTEGER NOT NULL DEFAULT 0
+      );
+      -- Asset tokens (SHA-256, base64url) for the sandboxed frame. invite_hash is NULL for the open link.
+      CREATE TABLE IF NOT EXISTS asset_tokens (token_hash TEXT PRIMARY KEY, invite_hash TEXT, expires_at INTEGER NOT NULL);
     `);
   }
 
@@ -95,25 +112,88 @@ export class PageObject extends DurableObject<Env> {
     const identity = JSON.parse(request.headers.get(IDENTITY_HEADER) ?? "null") as Identity | null;
     if (!identity) return refusal(403, "no identity");
     this.sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('page', ?)", identity.page);
+    const state: SocketState = { role: identity.role, owner: identity.owner, ipHash: identity.ipHash, live: false };
     if (identity.role === "reviewer") {
-      const page = this.pageRow();
-      if (!page || page.deleted) return refusal(404, "page not found");
-      if (!identity.pageIdAccess && !page.unlisted) return refusal(403, "this page needs an invite");
+      const access = this.reviewerAccess(identity.invite);
+      if ("status" in access) return refusal(access.status, access.message);
+      if (access.invite) state.invite = access.invite;
+      else state.viaUnlisted = true;
     }
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
-    const state: SocketState = {
-      role: identity.role,
-      owner: identity.owner,
-      ipHash: identity.ipHash,
-      live: false,
-      viaUnlisted: identity.role === "reviewer" && !identity.pageIdAccess,
-    };
     server.serializeAttachment(state);
     return new Response(null, { status: 101, webSocket: client, headers: { "sec-websocket-protocol": SUBPROTOCOL } });
   }
 
+  /**
+   * Reviewer access by invite token hash: a live invite, else the open link when the page is
+   * unlisted, else 403. A wrong, revoked or expired token on an unlisted page is the open link.
+   */
+  private reviewerAccess(inviteHash: string | undefined): ReviewerAccess {
+    const page = this.pageRow();
+    if (!page || page.deleted) return { status: 404, message: "page not found" };
+    const invite = inviteHash === undefined ? null : this.liveInvite(inviteHash);
+    if (invite) return { invite };
+    if (page.unlisted) return { invite: null };
+    return { status: 403, message: inviteHash === undefined ? "this page needs an invite" : "this invite is not valid" };
+  }
+
+  private liveInvite(hash: string): { name: string; hash: string; expiresAt: number | null } | null {
+    const row = this.sql
+      .exec<{ name: string; expires_at: number | null }>(
+        "SELECT name, expires_at FROM invites WHERE token_hash = ? AND revoked = 0 AND (expires_at IS NULL OR expires_at > ?)",
+        hash,
+        Date.now(),
+      )
+      .toArray()[0];
+    return row ? { name: row.name, hash, expiresAt: row.expires_at } : null;
+  }
+
+  /** RPC for `POST /p/:id/asset-token`: trades reviewer access for a short-lived, page-scoped asset token. */
+  async assetToken(page: string, inviteHash: string | undefined): Promise<AssetTokenAnswer> {
+    this.sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('page', ?)", page);
+    const access = this.reviewerAccess(inviteHash);
+    if ("status" in access) return access;
+    const token = randomId(32);
+    const now = Date.now();
+    const expiresAt = now + ASSET_TOKEN_MS;
+    this.sql.exec("DELETE FROM asset_tokens WHERE expires_at <= ?", now);
+    this.sql.exec("INSERT INTO asset_tokens (token_hash, invite_hash, expires_at) VALUES (?, ?, ?)", await sha256B64url(token), access.invite?.hash ?? null, expiresAt);
+    return { token, expiresAt, name: access.invite?.name ?? null };
+  }
+
+  /**
+   * RPC for `GET /p/:id/a/<assetToken>/`: whether the token is unexpired and what it was issued
+   * against still holds (its invite is live, or the page is still unlisted).
+   */
+  async assetAllowed(tokenHash: string): Promise<boolean> {
+    const row = this.sql
+      .exec<{ invite_hash: string | null }>("SELECT invite_hash FROM asset_tokens WHERE token_hash = ? AND expires_at > ?", tokenHash, Date.now())
+      .toArray()[0];
+    if (!row) return false;
+    const page = this.pageRow();
+    if (!page || page.deleted) return false;
+    return row.invite_hash === null ? page.unlisted : this.liveInvite(row.invite_hash) !== null;
+  }
+
+  /** Sends `error` `forbidden` to every reviewer socket `pred` picks, and closes it (1008). */
+  private closeReviewers(pred: (s: SocketState) => boolean, message: string): void {
+    for (const s of this.ctx.getWebSockets()) {
+      const state = attachment(s);
+      if (state.role !== "reviewer" || !pred(state)) continue;
+      this.send(s, errorFrame("forbidden", message));
+      this.leave(s);
+      s.close(1008, "forbidden");
+    }
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const expires = attachment(ws).invite?.expiresAt;
+    if (expires != null && expires <= Date.now()) {
+      this.send(ws, errorFrame("forbidden", "this invite has expired"));
+      this.leave(ws);
+      return ws.close(1008, "forbidden");
+    }
     this.touch(ws);
     if (typeof message !== "string") return this.send(ws, errorFrame("invalid", "frames are JSON text"));
     const parsed = parseClientFrame(message);
@@ -187,8 +267,9 @@ export class PageObject extends DurableObject<Env> {
       case "addReply":
         return { apply: () => [this.put({ type: "reply", id: randomId(12), text: m.args.text, at: Date.now() })] };
       case "grant":
+        return this.grant(m.args);
       case "revoke":
-        return fail("invalid", `${m.name}: invites are not available on this server yet`);
+        return this.revoke(m.args.name);
     }
   }
 
@@ -285,13 +366,7 @@ export class PageObject extends DurableObject<Env> {
       after: async () => {
         if (!page.presence) await this.endPresence();
         // Sockets that came in through the open link lose access when it closes.
-        if (page.unlisted) return;
-        for (const s of this.ctx.getWebSockets()) {
-          if (!attachment(s).viaUnlisted) continue;
-          this.send(s, errorFrame("forbidden", "this page now needs an invite"));
-          this.leave(s);
-          s.close(1008, "forbidden");
-        }
+        if (!page.unlisted) this.closeReviewers((s) => s.viaUnlisted === true, "this page now needs an invite");
       },
     };
   }
@@ -300,14 +375,79 @@ export class PageObject extends DurableObject<Env> {
     const page = this.pageRow();
     if (!page || page.deleted) return fail("invalid", "the page is not published");
     const id = this.pageId();
-    const retry = await take(this.env, `note:${id}:${state.ipHash}`, RATE_LIMITS.notesPerIpPerPage);
+    // Invited reviewers are counted per invite, the open link per IP.
+    const who = state.invite ? `i:${state.invite.name}` : state.ipHash;
+    const retry = await take(this.env, `note:${id}:${who}`, RATE_LIMITS.notesPerReviewerPerPage);
     if (retry !== null) return fail("rate_limited", "note limit reached for this page; try again later", retry);
-    const author = declaredName(args.name);
+    // An invited reviewer is named by the invite; the open link names itself.
+    const author = state.invite?.name ?? declaredName(args.name);
     const note = { type: "note", id: randomId(12), author, items: args.items, at: Date.now(), state: page.auto ? "released" : "held" } as const;
     return {
       apply: () => [this.put(note)],
       after: async () => {
         await this.env.DB.prepare("UPDATE pages SET notes = notes + 1 WHERE id = ?").bind(id).run();
+      },
+    };
+  }
+
+  /**
+   * Creates invite `name`, or gives it a new token and expiry. A new token closes the sockets
+   * that came in with the old one; the same token only moves the expiry (and revives a revoked
+   * invite). `grantedAt` is when the current token was granted: a re-grant of the same token keeps it,
+   * so an owner peer can tell its own token's grant from a re-grant elsewhere.
+   */
+  private grant(args: MutationArgs["grant"]): Outcome {
+    const now = Date.now();
+    if (args.expiresAt !== null && args.expiresAt <= now) return fail("invalid", "grant.expiresAt is in the past");
+    const taken = this.sql.exec<{ name: string }>("SELECT name FROM invites WHERE token_hash = ?", args.tokenHash).toArray()[0];
+    if (taken && taken.name !== args.name) return fail("invalid", "grant.tokenHash belongs to another invite");
+    const sameToken = taken?.name === args.name ? this.row<AclRow>("acl", args.name) : null;
+    // `grant` names the token by a hash prefix, so owner peers can tell whose link is live; never the token or the full hash.
+    const acl = {
+      type: "acl",
+      id: args.name,
+      name: args.name,
+      grantedAt: sameToken?.grantedAt ?? now,
+      expiresAt: args.expiresAt,
+      revoked: false,
+      grant: grantId(args.tokenHash),
+    } as const;
+    return {
+      apply: () => {
+        this.sql.exec(
+          `INSERT INTO invites (name, token_hash, expires_at, revoked) VALUES (?, ?, ?, 0)
+           ON CONFLICT (name) DO UPDATE SET token_hash = excluded.token_hash, expires_at = excluded.expires_at, revoked = 0`,
+          args.name,
+          args.tokenHash,
+          args.expiresAt,
+        );
+        return [this.put(acl)];
+      },
+      after: async () => {
+        this.closeReviewers((s) => s.invite?.name === args.name && s.invite.hash !== args.tokenHash, "this invite was replaced");
+        for (const s of this.ctx.getWebSockets()) {
+          const state = attachment(s);
+          if (state.invite?.name !== args.name) continue;
+          s.serializeAttachment({ ...state, invite: { ...state.invite, expiresAt: args.expiresAt } } satisfies SocketState);
+        }
+        await this.scheduleAlarm();
+      },
+    };
+  }
+
+  /** Revokes invite `name` and closes its sockets. An already revoked invite stays as it is. */
+  private revoke(name: string): Outcome {
+    const acl = this.row<AclRow>("acl", name);
+    if (!acl) return fail("invalid", `invite ${name} does not exist`);
+    if (acl.revoked) return { apply: () => [] };
+    return {
+      apply: () => {
+        this.sql.exec("UPDATE invites SET revoked = 1 WHERE name = ?", name);
+        return [this.put({ ...acl, revoked: true })];
+      },
+      after: async () => {
+        this.closeReviewers((s) => s.invite?.name === name, "this invite was revoked");
+        await this.scheduleAlarm();
       },
     };
   }
@@ -455,7 +595,7 @@ export class PageObject extends DurableObject<Env> {
     this.setViewer(ws, viewer);
     if (gone) {
       this.toOthers(ws, helloFrame(viewer, false));
-      this.ctx.waitUntil(this.scheduleExpiry());
+      this.ctx.waitUntil(this.scheduleAlarm());
     }
   }
 
@@ -482,8 +622,8 @@ export class PageObject extends DurableObject<Env> {
   /** The socket's `hello`: the roster to it (the others, then its own entry, `self`), its entry to the others. */
   private async join(ws: WebSocket, hello: HelloFrame): Promise<void> {
     const state = attachment(ws);
-    // A second hello may carry a name the reviewer has just given (the chrome's name prompt).
-    const name = viewerName(state.role, hello.name);
+    // On the open link a second hello may carry a name the reviewer has just given (the chrome's name prompt).
+    const name = viewerName(state.role, state.invite?.name, hello.name);
     // Another socket under the same name shares its colour; other names present keep theirs.
     const others = this.viewers().flatMap(([s, v]) => (s === ws ? [] : [v]));
     const colour =
@@ -495,7 +635,7 @@ export class PageObject extends DurableObject<Env> {
     for (const [s, v] of this.viewers()) if (s !== ws && !v.gone) this.send(ws, helloFrame(v, false));
     this.send(ws, helloFrame(viewer, true));
     this.toOthers(ws, helloFrame(viewer, false));
-    await this.scheduleExpiry();
+    await this.scheduleAlarm();
   }
 
   /** The socket stops being a viewer (`bye`, close): the others get `bye`. */
@@ -511,27 +651,36 @@ export class PageObject extends DurableObject<Env> {
     const viewers = this.viewers();
     for (const [ws] of viewers) this.setViewer(ws, undefined);
     for (const [ws] of viewers) for (const [, v] of viewers) this.send(ws, byeFrame(v.id));
-    await this.ctx.storage.deleteAlarm();
+    await this.scheduleAlarm();
   }
 
-  private async scheduleExpiry(): Promise<void> {
-    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + EXPIRE_MS);
+  /**
+   * The object's one alarm serves two deadlines: the next invite expiry, and the next viewer that
+   * would go silent (presence). Set to the earlier; deleted when there is neither.
+   */
+  private async scheduleAlarm(): Promise<void> {
+    const now = Date.now();
+    const invite = this.sql.exec<{ at: number | null }>("SELECT MIN(expires_at) AS at FROM invites WHERE revoked = 0 AND expires_at > ?", now).one().at;
+    let next = invite ?? Infinity;
+    for (const [, v] of this.viewers()) if (!v.gone) next = Math.min(next, v.last + EXPIRE_MS);
+    if (next === Infinity) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.max(next, now));
   }
 
-  /** Viewers silent for EXPIRE_MS go: the others get `bye`. Runs while any viewer is present. */
+  /**
+   * Closes the reviewer sockets of invites that have expired; viewers silent for EXPIRE_MS go (the
+   * others get `bye`); then re-arms for the next deadline.
+   */
   async alarm(): Promise<void> {
     const now = Date.now();
-    let next = Infinity;
+    this.closeReviewers((s) => s.invite?.expiresAt != null && s.invite.expiresAt <= now, "this invite has expired");
+    this.sql.exec("DELETE FROM asset_tokens WHERE expires_at <= ?", now);
     for (const [ws, v] of this.viewers()) {
-      if (v.gone) continue;
-      if (now - v.last < EXPIRE_MS) {
-        next = Math.min(next, v.last + EXPIRE_MS);
-        continue;
-      }
+      if (v.gone || now - v.last < EXPIRE_MS) continue;
       this.setViewer(ws, { ...v, gone: true });
       this.toOthers(ws, byeFrame(v.id));
     }
-    if (next < Infinity) await this.ctx.storage.setAlarm(next);
+    await this.scheduleAlarm();
   }
 }
 

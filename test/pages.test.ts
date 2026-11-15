@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { CLI, PAGE_HTML, call, createPage, gzip, newOwner, ownerSocket, publish, publishArgs, putObject, sha256Hex } from "./helpers";
+import { CLI, PAGE_HTML, artifact, call, createPage, gzip, invite, newOwner, ownerSocket, publish, publishArgs, putObject, sha256Hex } from "./helpers";
 
 const row = (id: string) => env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first<Record<string, number | string | null>>();
 const objectKeys = async () => (await env.PAGES.list({ prefix: "objects/" })).objects.map((o) => o.key).sort();
@@ -21,7 +21,8 @@ describe("publish lifecycle", () => {
 
     const { ack } = await publish(token, { id });
     expect(ack.error).toBeUndefined();
-    const art = await call(`/p/${id}/a/`);
+    const ana = await invite(token, id);
+    const art = await artifact(id, ana);
     expect(art.status).toBe(200);
     expect(await art.text()).toBe(PAGE_HTML);
     const shell = await (await call(`/p/${id}`)).text();
@@ -38,7 +39,7 @@ describe("publish lifecycle", () => {
     await new Promise((r) => setTimeout(r, 5));
     const html2 = PAGE_HTML.replace("Hello", "Hello again");
     expect((await publish(token, { id, html: html2, args: { title: "Plan v2" } })).ack.error).toBeUndefined();
-    expect(await (await call(`/p/${id}/a/`)).text()).toBe(html2);
+    expect(await (await artifact(id, ana)).text()).toBe(html2);
     const second = (await row(id))!;
     expect(second.title).toBe("Plan v2");
     expect(Number(second.published_at)).toBeGreaterThan(Number(first.published_at));
@@ -59,7 +60,7 @@ describe("publish lifecycle", () => {
     const b = await publish(token);
     const owner = await ownerSocket(token, a.id);
     await owner.mutate("delete", {});
-    expect((await call(`/p/${b.id}/a/`)).status).toBe(200);
+    expect((await artifact(b.id, await invite(token, b.id))).status).toBe(200);
     expect(await objectKeys()).toEqual([`objects/${await sha256Hex(PAGE_HTML)}`]);
   });
 

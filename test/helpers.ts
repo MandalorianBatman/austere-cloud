@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { mutation, parseServerFrame, syncProtocols } from "austere-axi/sync";
 import type { AckFrame, ErrorCode, MutationArgs, MutationName, PublishArgs, ReceivedChanges, ReceivedFrame } from "austere-axi/sync";
 import worker from "../src/index";
-import { sha256Hex } from "../src/util";
+import { randomId, sha256B64url, sha256Hex } from "../src/util";
 
 /** The version floor: the one value in wrangler.toml, so tests follow it when RLM-271 changes it. */
 export const CLI = env.MIN_CLI_VERSION;
@@ -171,8 +171,37 @@ export function ownerSocket(token: string, id: string, init: SocketInit & { cli?
   return client(`/api/pages/${id}/sync?cli=${init.cli ?? CLI}`, { protocols: syncProtocols({ owner: token }), ...init });
 }
 
-export function reviewerSocket(id: string, init: SocketInit = {}): Promise<Client> {
-  return client(`/p/${id}/sync`, { protocols: syncProtocols({}), ...init });
+export function reviewerSocket(id: string, init: SocketInit & { invite?: string } = {}): Promise<Client> {
+  return client(`/p/${id}/sync`, { protocols: syncProtocols({ invite: init.invite }), ...init });
+}
+
+/** Grants invite `name` on an owner socket and returns its token, as `publish --invite` does. */
+export async function grant(owner: Client, name: string, expiresAt: number | null = null): Promise<string> {
+  const token = randomId(32);
+  const ack = await owner.mutate("grant", { name, tokenHash: await sha256B64url(token), expiresAt });
+  if (ack.error) throw new Error(`grant ${name}: ${ack.error.message}`);
+  return token;
+}
+
+/** `grant` on a fresh owner socket. */
+export async function invite(token: string, id: string, name = "Ana", expiresAt: number | null = null): Promise<string> {
+  const owner = await ownerSocket(token, id);
+  const t = await grant(owner, name, expiresAt);
+  owner.close();
+  return t;
+}
+
+/** POST /p/:id/asset-token with the invite (if any) in X-Austere-Invite. */
+export function assetToken(id: string, invite?: string, init: { ip?: string } = {}): Promise<Response> {
+  return call(`/p/${id}/asset-token`, { method: "POST", headers: invite === undefined ? {} : { "x-austere-invite": invite }, ip: init.ip });
+}
+
+/** The artifact as the chrome loads it: trade the invite for an asset token, then GET /p/:id/a/<token>/. */
+export async function artifact(id: string, invite?: string): Promise<Response> {
+  const res = await assetToken(id, invite);
+  if (res.status !== 200) return res;
+  const { token } = (await res.json()) as { token: string };
+  return call(`/p/${id}/a/${token}/`);
 }
 
 /** The code of a refused handshake (`{ error: { code, message } }`). */
@@ -211,4 +240,4 @@ export async function gzip(text: string): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-export { sha256Hex };
+export { sha256B64url, sha256Hex };

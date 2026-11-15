@@ -13,7 +13,8 @@ export const RATE_LIMITS = {
   newOwnersPerIp: { max: 5, window: DAY },
   publishesPerOwner: { max: 20, window: DAY },
   publishesPerIp: { max: 100, window: DAY },
-  notesPerIpPerPage: { max: 60, window: HOUR },
+  /** Per invite on an invited socket, per IP on the open link. */
+  notesPerReviewerPerPage: { max: 60, window: HOUR },
 } as const;
 
 /** HMAC of the client IP, used for rate limits and abuse handling instead of the raw address. */

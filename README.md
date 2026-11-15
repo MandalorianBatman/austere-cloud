@@ -1,6 +1,6 @@
 # austere-cloud
 
-Hosted share links for [austere-axi](https://github.com/MandalorianBatman/austere-axi): `austere-axi publish plan.html` uploads a review page and returns a URL that reviewers can open and annotate.
+Hosted share links for [austere-axi](https://github.com/MandalorianBatman/austere-axi): `austere-axi publish plan.html --invite Ana` uploads a review page and prints one link per invited reviewer (`/p/<id>#i=<token>`); invites are named and revocable, and an open link is opt-in (`--unlisted`).
 
 A Cloudflare Worker (TypeScript) with D1 for the owner's index, R2 for content-addressed objects, and one SQLite-backed Durable Object per page that owns its notes, replies and change feed. The CLI and the reviewer chrome talk to the page object over a WebSocket using the `austere-axi/sync` protocol. Implementation notes: [docs/design.md](docs/design.md); the contract: [austere-axi docs/hosted-share-links.md](https://github.com/MandalorianBatman/austere-axi/blob/main/docs/hosted-share-links.md).
 
@@ -14,10 +14,10 @@ npm run typecheck
 cp .dev.vars.example .dev.vars
 npx wrangler d1 migrations apply austere-cloud --local
 npm run dev         # http://localhost:8787
-npm run smoke       # in another shell: publish, notes, replies, idempotency, delete over the sockets
+npm run smoke       # in another shell: publish, two invites, notes, replies, idempotency, live revoke, delete
 ```
 
-`austere-axi/sync` is not on npm yet. Until the release that ships it (RLM-271), `package.json` installs it from `vendor/austere-axi-9f88d27.tgz`, an `npm pack` of austere-axi at commit `9f88d27` (the merge of RLM-313). To refresh it, run `npm ci && npm run build && npm pack` in an austere-axi checkout and install the tarball here; once the release is out, depend on it from npm and delete `vendor/`.
+`austere-axi/sync` is not on npm yet. Until the release that ships it (RLM-271), `package.json` installs it from `vendor/austere-axi-8f1d55b.tgz`, an `npm pack` of austere-axi `main` at `8f1d55b` (the merge of austere-axi#56, RLM-314). To refresh it, run `npm ci && npm run build && npm pack` in an austere-axi checkout and install the tarball here; once the release is out, depend on it from npm and delete `vendor/`.
 
 ## Publish by hand
 

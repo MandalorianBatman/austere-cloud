@@ -21,6 +21,6 @@
     "wrangler": "^4.158.0"
   },
   "dependencies": {
-    "austere-axi": "file:vendor/austere-axi-9f88d27.tgz"
+    "austere-axi": "file:vendor/austere-axi-8f1d55b.tgz"
   }
 }

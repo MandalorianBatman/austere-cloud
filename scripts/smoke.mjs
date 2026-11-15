@@ -151,23 +151,41 @@ const pub = await o.mutate("publish", { title: "Smoke", cliVersion: CLI, html: s
 check(!pub.error, "publish -> ack", pub);
 const pageRow = (await o.changes()).rows[0];
 check(pageRow.type === "page" && pageRow.seq === 1 && pageRow.html === sha, "owner gets page row seq 1 live", pageRow);
-const art = await http("GET", `/p/${id}/a/`);
-check(art.status === 200 && art.text === html, "GET /p/:id/a/ serves the uploaded object byte-for-byte");
-check((await http("GET", `/p/${id}`)).status === 200, "GET /p/:id shell -> 200");
+check((await http("GET", `/p/${id}`)).status === 200, "GET /p/:id shell -> 200 (public, holds no content)");
+
+// ── Invites: grant two, as `publish --invite` does ─────────────────────────
+const inviteToken = () => randomBytes(32).toString("base64url");
+const tokenHash = (t) => createHash("sha256").update(t).digest("base64url");
+const ana = inviteToken();
+const ben = inviteToken();
+for (const [name, t] of [["Ana", ana], ["Ben", ben]]) {
+  const g = await o.mutate("grant", { name, tokenHash: tokenHash(t), expiresAt: null });
+  check(!g.error, `grant ${name} -> ack`, g);
+  const acl = (await o.changes()).rows[0];
+  check(acl.type === "acl" && acl.name === name && !("tokenHash" in acl), `owner gets acl row ${name} (no token hash)`, acl);
+}
+const noInvite = await handshake(`/p/${id}/sync`, ["austere-sync.1"]);
+check(noInvite.status === 403 && noInvite.body.error.code === "forbidden", "reviewer socket without invite -> 403 forbidden", noInvite);
+check((await http("POST", `/p/${id}/asset-token`)).status === 403, "asset-token without invite -> 403");
+check((await http("GET", `/p/${id}/a/`)).status === 403, "artifact without asset token -> 403");
+const traded = await http("POST", `/p/${id}/asset-token`, { headers: { "x-austere-invite": ana } });
+check(traded.status === 200 && traded.json.name === "Ana", "asset-token with Ana's invite -> 200, name Ana", traded.json);
+const art = await http("GET", `/p/${id}/a/${traded.json.token}/`);
+check(art.status === 200 && art.text === html, "GET /p/:id/a/<assetToken>/ serves the uploaded object byte-for-byte");
 
 // ── Reviewer: note, owner sees it, reply comes back ─────────────────────────
-const r = await connect(`/p/${id}/sync`, {});
+const r = await connect(`/p/${id}/sync`, { invite: ana });
 const [first] = await r.pull(0);
-check(first.rows.length === 1 && first.rows[0].type === "page" && first.cursor === 1, "reviewer pull(0) -> page row, cursor 1", first);
-const noteAck = await r.mutate("addNote", { name: "Ana", items: [{ kind: "annotation", target: "intro", note: "Why now?" }] });
+check(first.rows.length === 1 && first.rows[0].type === "page" && first.cursor === 3, "reviewer pull(0) -> page row only (no acl), cursor 3", first);
+const noteAck = await r.mutate("addNote", { name: "Mallory", items: [{ kind: "annotation", target: "intro", note: "Why now?" }] });
 check(!noteAck.error, "reviewer addNote -> ack", noteAck);
 const noteRow = (await o.changes()).rows[0];
-check(noteRow.type === "note" && noteRow.author === "Ana" && noteRow.state === "held" && noteRow.seq === 2, "owner receives note row live (held, author Ana)", noteRow);
+check(noteRow.type === "note" && noteRow.author === "Ana" && noteRow.state === "held" && noteRow.seq === 4, "owner receives note row live (held, author = invite name Ana)", noteRow);
 await r.changes();
 const replyAck = await o.mutate("addReply", { text: "Because the deadline moved." });
 check(!replyAck.error, "owner addReply -> ack", replyAck);
 const replyRow = (await r.changes()).rows[0];
-check(replyRow.type === "reply" && replyRow.seq === 3, "reviewer receives reply row live", replyRow);
+check(replyRow.type === "reply" && replyRow.seq === 5, "reviewer receives reply row live", replyRow);
 await o.changes();
 
 // ── Idempotency, roles, reconnect ───────────────────────────────────────────
@@ -180,14 +198,33 @@ check(big.error?.code === "too_large", "addNote with 5 KB items -> ack too_large
 r.ws.close();
 await o.mutate("releaseNote", { note: noteRow.id });
 const released = (await o.changes()).rows[0];
-check(released.id === noteRow.id && released.state === "released" && released.seq === 4, "releaseNote -> note row at seq 4, released", released);
-const r2 = await connect(`/p/${id}/sync`, {});
+check(released.id === noteRow.id && released.state === "released" && released.seq === 6, "releaseNote -> note row at seq 6, released", released);
+const r2 = await connect(`/p/${id}/sync`, { invite: ana });
 const [since] = await r2.pull(first.cursor);
 check(
-  JSON.stringify(since.rows.map((x) => [x.type, x.seq])) === JSON.stringify([["reply", 3], ["note", 4]]) && since.cursor === 4,
-  "reviewer reconnect pull(after=1) -> only reply 3 and note 4",
+  JSON.stringify(since.rows.map((x) => [x.type, x.seq])) === JSON.stringify([["reply", 5], ["note", 6]]) && since.cursor === 6,
+  "reviewer reconnect pull(after=3) -> only reply 5 and note 6",
   since,
 );
+
+// ── Revoke one invite live ──────────────────────────────────────────────────
+const rb = await connect(`/p/${id}/sync`, { invite: ben });
+await rb.pull(0);
+const benAsset = (await http("POST", `/p/${id}/asset-token`, { headers: { "x-austere-invite": ben } })).json.token;
+const rev = await o.mutate("revoke", { name: "Ben" });
+check(!rev.error, "revoke Ben -> ack", rev);
+const revErr = await rb.take((f) => f.t === "error");
+check(revErr.code === "forbidden", "Ben's open socket gets error forbidden", revErr);
+const benClosed = await rb.closedWith();
+check(benClosed?.code === 1008, "Ben's open socket closed with 1008", benClosed);
+const benAgain = await handshake(`/p/${id}/sync`, syncProtocols({ invite: ben }));
+check(benAgain.status === 403, "Ben's invite on a new handshake -> 403", benAgain);
+check((await http("GET", `/p/${id}/a/${benAsset}/`)).status === 403, "Ben's earlier asset token -> 403");
+check(!r2.closed && !(await r2.mutate("addNote", { items: [{ kind: "message", text: "still here" }] })).error, "Ana's socket stays open and can still send");
+await o.changes(); // Ben's revoked acl row
+await o.changes(); // Ana's note
+await r2.changes(); // the revoke's frame: no rows (acl is the owner's), the page's counter
+await r2.changes(); // Ana's note
 
 // ── Delete ──────────────────────────────────────────────────────────────────
 const del = await o.mutate("delete", {});

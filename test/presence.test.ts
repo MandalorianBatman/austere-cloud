@@ -2,16 +2,16 @@ import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { PresenceStatus, ReceivedFrame, ViewerBye, ViewerFocus, ViewerHello, ViewerStatus } from "austere-axi/sync";
 import { describe, expect, it } from "vitest";
-import { type Client, newOwner, ownerSocket, publish, reviewerSocket } from "./helpers";
+import { type Client, grant, newOwner, ownerSocket, publish, reviewerSocket } from "./helpers";
 
 const isHello = (f: ReceivedFrame): f is ViewerHello => f.t === "hello";
 const isBye = (f: ReceivedFrame): f is ViewerBye => f.t === "bye";
 const isPresence = (f: ReceivedFrame) => ["hello", "status", "focus", "bye"].includes(f.t);
 
-/** A published page and its owner token. */
+/** A published unlisted page (reviewers name themselves) and its owner token. */
 async function page(args = {}) {
   const token = await newOwner();
-  const { id, ack } = await publish(token, { args });
+  const { id, ack } = await publish(token, { args: { unlisted: true, ...args } });
   expect(ack.error).toBeUndefined();
   return { token, id };
 }
@@ -205,6 +205,46 @@ describe("expiry", () => {
   });
 });
 
+describe("invites", () => {
+  it("an invited viewer is named by the invite, whatever its hello says; revoke sends its bye", async () => {
+    const token = await newOwner();
+    const { id } = await publish(token);
+    const owner = await ownerSocket(token, id);
+    const ana = await reviewerSocket(id, { invite: await grant(owner, "Ana") });
+    const self = (await join(ana, "Mallory")).at(-1)!;
+    expect(self.viewer).toMatchObject({ name: "Ana", role: "reviewer" });
+    const ownerRoster = await join(owner);
+    expect(ownerRoster.map((h) => h.viewer.name)).toEqual(["Ana", "Owner"]);
+    await owner.mutate("revoke", { name: "Ana" });
+    expect(await owner.take(isBye)).toEqual({ v: 1, t: "bye", viewer: self.viewer.id });
+  });
+
+  it("one alarm serves both: an invite expiring before the viewer timeout fires first, presence re-arms after", async () => {
+    const token = await newOwner();
+    const { id } = await publish(token);
+    const owner = await ownerSocket(token, id);
+    const soon = Date.now() + 30_000;
+    const ana = await reviewerSocket(id, { invite: await grant(owner, "Ana", soon) });
+    await join(ana);
+    await join(owner);
+    // The invite expiry (30 s) is earlier than the viewers' 60 s timeout.
+    expect(await runInDurableObject(stub(id), (_o, state) => state.storage.getAlarm())).toBe(soon);
+    // Expire it now; the alarm closes Ana and re-arms for the owner viewer's timeout.
+    await runInDurableObject(stub(id), (_o, state) => {
+      state.storage.sql.exec("UPDATE invites SET expires_at = ?", Date.now() - 1);
+      for (const ws of state.getWebSockets()) {
+        const s = ws.deserializeAttachment();
+        if (s.invite) ws.serializeAttachment({ ...s, invite: { ...s.invite, expiresAt: Date.now() - 1 } });
+      }
+    });
+    expect(await runDurableObjectAlarm(stub(id))).toBe(true);
+    expect((await ana.closedWith()).code).toBe(1008);
+    expect(await owner.take(isBye)).toMatchObject({ t: "bye" });
+    const next = await runInDurableObject(stub(id), (_o, state) => state.storage.getAlarm());
+    expect(next).toBeGreaterThan(Date.now() + 50_000);
+  });
+});
+
 describe("storage", () => {
   it("presence is never in the op log, the rows or the row feed", async () => {
     const { token, id } = await page();
@@ -251,7 +291,7 @@ describe("--no-presence", () => {
     a.frames.length = 0;
     b.frames.length = 0;
 
-    expect((await publish(token, { id, args: { presence: false } })).ack.error).toBeUndefined();
+    expect((await publish(token, { id, args: { unlisted: true, presence: false } })).ack.error).toBeUndefined();
     for (const c of [a, b]) {
       const byes = [await c.take(isBye), await c.take(isBye)].map((f) => f.viewer).sort();
       expect(byes).toEqual([aId, bId].sort());

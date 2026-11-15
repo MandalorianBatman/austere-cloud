@@ -48,9 +48,10 @@ export function declaredName(name: string | undefined): string {
 }
 
 /**
- * The roster name of a socket. Until invites (RLM-314) a reviewer socket carries no name of its
- * own, so the name prompt's `hello.name` is used; an invited socket's invite name replaces it here.
+ * The roster name of a socket: `Owner`; an invited reviewer's invite name; on the open link the
+ * name prompt's `hello.name` (`declaredName`).
  */
-export function viewerName(role: Role, declared: string | undefined): string {
-  return role === "owner" ? "Owner" : declaredName(declared);
+export function viewerName(role: Role, invite: string | undefined, declared: string | undefined): string {
+  if (role === "owner") return "Owner";
+  return invite ?? declaredName(declared);
 }

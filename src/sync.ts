@@ -7,7 +7,7 @@ import { ownerByToken } from "./auth";
 import { ipHash } from "./limits";
 import { versionAllowed } from "./runtime";
 import { livePage } from "./serve";
-import { HttpError, json } from "./util";
+import { HttpError, json, sha256B64url } from "./util";
 
 /** Who a socket belongs to, set by the Worker and read by the page object. */
 export interface Identity {
@@ -16,8 +16,8 @@ export interface Identity {
   /** Owner id, on owner sockets. */
   owner?: string;
   ipHash: string;
-  /** A reviewer may connect without an invite (PAGE_ID_AS_CREDENTIAL). */
-  pageIdAccess: boolean;
+  /** The SHA-256 (base64url) of the invite token a reviewer offered; the token itself stays in the Worker. */
+  invite?: string;
 }
 
 export const IDENTITY_HEADER = "x-austere-identity";
@@ -63,25 +63,50 @@ export function ownerSync(request: Request, env: Env, id: string): Promise<Respo
     if (page === "gone") throw new HttpError(410, "this page was taken down");
     // Another owner's page is indistinguishable from a missing one.
     if (!page || page.owner_id !== owner.id) throw new HttpError(404, "page not found");
-    return toPage(env, { page: id, role: "owner", owner: owner.id, ipHash: await ipHash(env, request), pageIdAccess: false });
+    return toPage(env, { page: id, role: "owner", owner: owner.id, ipHash: await ipHash(env, request) });
   });
 }
 
-/** GET /p/:id/sync: the reviewer chrome, same origin only. */
+/** Reviewer routes are same-origin only: the chrome is the one client. */
+function sameOrigin(request: Request): void {
+  const origin = request.headers.get("origin");
+  if (origin !== null && origin !== new URL(request.url).origin) throw new HttpError(403, "foreign origin");
+}
+
+/** A published, unexpired page that is not taken down; throws 404 or 410. */
+async function reviewablePage(env: Env, id: string): Promise<void> {
+  const page = await livePage(env, id);
+  if (page === "gone") throw new HttpError(410, "this page was taken down");
+  if (!page || page.published_at === null) throw new HttpError(404, "page not found");
+}
+
+/** GET /p/:id/sync: the reviewer chrome. The invite rides in Sec-WebSocket-Protocol. */
 export function reviewerSync(request: Request, env: Env, id: string): Promise<Response> {
   return guarded(async () => {
-    const origin = request.headers.get("origin");
-    if (origin !== null && origin !== new URL(request.url).origin) throw new HttpError(403, "foreign origin");
-    checkUpgrade(request);
+    sameOrigin(request);
+    const creds = checkUpgrade(request);
     const page = await livePage(env, id);
     if (page === "gone") throw new HttpError(410, "this page was taken down");
     if (!page || page.published_at === null) throw new HttpError(404, "page not found");
     if (!versionAllowed(env, page.cli_version)) throw new HttpError(426, `this page needs republishing with austere-axi ${env.MIN_CLI_VERSION} or later`);
-    return toPage(env, {
-      page: id,
-      role: "reviewer",
-      ipHash: await ipHash(env, request),
-      pageIdAccess: env.PAGE_ID_AS_CREDENTIAL === "true",
-    });
+    const identity: Identity = { page: id, role: "reviewer", ipHash: await ipHash(env, request) };
+    if (creds.invite !== undefined) identity.invite = await sha256B64url(creds.invite);
+    return toPage(env, identity);
+  });
+}
+
+export const INVITE_HEADER = "x-austere-invite";
+const TOKEN_RE = /^[A-Za-z0-9_-]{16,256}$/;
+
+/** POST /p/:id/asset-token: trades the invite (X-Austere-Invite) for the frame's asset token. */
+export function assetToken(request: Request, env: Env, id: string): Promise<Response> {
+  return guarded(async () => {
+    sameOrigin(request);
+    await reviewablePage(env, id);
+    const invite = request.headers.get(INVITE_HEADER);
+    if (invite !== null && !TOKEN_RE.test(invite)) throw new HttpError(403, "this invite is not valid");
+    const answer = await env.PAGE.get(env.PAGE.idFromName(id)).assetToken(id, invite === null ? undefined : await sha256B64url(invite));
+    if ("status" in answer) throw new HttpError(answer.status, answer.message);
+    return json(answer);
   });
 }

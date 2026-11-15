@@ -3,7 +3,7 @@ import { handleApi } from "./api";
 import { handleServe } from "./serve";
 import { serveRuntime } from "./runtime";
 import { HttpError, json } from "./util";
-import { reviewerSync } from "./sync";
+import { assetToken, reviewerSync } from "./sync";
 
 export { PageObject } from "./page";
 
@@ -16,6 +16,9 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 
   const sync = /^\/p\/([^/]+)\/sync$/.exec(path);
   if (sync) return request.method === "GET" ? reviewerSync(request, env, sync[1]) : new Response("method not allowed", { status: 405 });
+
+  const asset = /^\/p\/([^/]+)\/asset-token$/.exec(path);
+  if (asset) return request.method === "POST" ? assetToken(request, env, asset[1]) : new Response("method not allowed", { status: 405, headers: { allow: "POST" } });
 
   const rt = /^\/rt\/([^/]+)\/(.+)$/.exec(path);
   if (rt) {
