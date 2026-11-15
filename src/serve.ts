@@ -1,11 +1,15 @@
-// Public serving: the chrome shell (/p/:id), the sandboxed artifact (/p/:id/a/)
+// Public serving: the chrome shell (/p/:id), the sandboxed artifact (/p/:id/a/<assetToken>/)
 // and pack objects (/pk/<sha>.js).
 import type { Env } from "./env";
 import { JS_TYPE, objectKey } from "./objects";
-import { PAGE_ID_RE, SHA_RE } from "./util";
+import { PAGE_ID_RE, SHA_RE, sha256B64url } from "./util";
 
-const NOT_FOUND = () => new Response("not found", { status: 404, headers: { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store" } });
-const GONE = () => new Response("gone", { status: 410, headers: { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store" } });
+const plain = (text: string, status: number) =>
+  new Response(text, { status, headers: { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+const NOT_FOUND = () => plain("not found", 404);
+const GONE = () => plain("gone", 410);
+const FORBIDDEN = () => plain("forbidden", 403);
+const ASSET_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -63,6 +67,7 @@ async function shell(env: Env, id: string): Promise<Response> {
     title: page.title,
     file: "",
     name: page.title,
+    // A prefix: the chrome trades its invite at `${base}/asset-token` and loads `${artifactUrl}<assetToken>/`.
     artifactUrl: `${base}/a/`,
     version: page.cli_version,
     viewer: { role: "reviewer", name: "" },
@@ -98,10 +103,13 @@ async function shell(env: Env, id: string): Promise<Response> {
   });
 }
 
-async function artifact(env: Env, id: string): Promise<Response> {
+/** The artifact, for a live asset token of this page only. */
+async function artifact(env: Env, id: string, token: string): Promise<Response> {
   const page = await publishedPage(env, id);
   if (page === "gone") return GONE();
   if (!page) return NOT_FOUND();
+  if (!ASSET_TOKEN_RE.test(token)) return FORBIDDEN();
+  if (!(await env.PAGE.get(env.PAGE.idFromName(id)).assetAllowed(await sha256B64url(token)))) return FORBIDDEN();
   const obj = await env.PAGES.get(objectKey(page.html));
   if (!obj) return NOT_FOUND();
   return new Response(obj.body, {
@@ -135,14 +143,15 @@ async function pack(env: Env, sha: string): Promise<Response> {
   });
 }
 
-/** Handles GET /p/:id, /p/:id/a/ and /pk/<sha>.js; null for other paths. */
+/** Handles GET /p/:id, /p/:id/a/<assetToken>/ and /pk/<sha>.js; null for other paths. */
 export async function handleServe(request: Request, env: Env, path: string): Promise<Response | null> {
-  const page = /^\/p\/([^/]+)(\/a\/)?$/.exec(path);
+  const page = /^\/p\/([^/]+)(\/a\/(?:([^/]*)\/)?)?$/.exec(path);
   const pk = /^\/pk\/([^/]+)\.js$/.exec(path);
   if (!page && !pk) return null;
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
   }
   if (pk) return pack(env, pk[1]);
-  return page![2] ? artifact(env, page![1]) : shell(env, page![1]);
+  if (page![2]) return artifact(env, page![1], page![3] ?? "");
+  return shell(env, page![1]);
 }

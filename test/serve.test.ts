@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { syncProtocols } from "austere-axi/sync";
-import { CLI, PAGE_HTML, call, newOwner, open, publish } from "./helpers";
+import { CLI, PAGE_HTML, artifact, call, invite, newOwner, open, publish } from "./helpers";
 
 describe("hosted page headers", () => {
   it("shell: strict CSP with the boot script allowed by hash, noindex", async () => {
@@ -39,8 +39,11 @@ describe("hosted page headers", () => {
   });
 
   it("artifact: sandbox CSP without allow-same-origin, no network, noindex", async () => {
-    const body = await publish(await newOwner());
-    const res = await call(`/p/${body.id}/a/`);
+    const token = await newOwner();
+    const body = await publish(token);
+    const res = await artifact(body.id, await invite(token, body.id));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     const csp = res.headers.get("content-security-policy")!;
     expect(csp).toContain("sandbox allow-scripts;");
     expect(csp).not.toContain("allow-same-origin");

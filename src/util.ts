@@ -21,6 +21,11 @@ export async function sha256Hex(data: string | Uint8Array): Promise<string> {
   return hex(await crypto.subtle.digest("SHA-256", bytes as BufferSource));
 }
 
+/** SHA-256 as base64url (43 characters): how invite and asset tokens are stored. */
+export async function sha256B64url(text: string): Promise<string> {
+  return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(text))));
+}
+
 export async function hmacHex(key: string, data: string): Promise<string> {
   const k = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return hex(await crypto.subtle.sign("HMAC", k, enc.encode(data)));

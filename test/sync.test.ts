@@ -8,10 +8,10 @@ import { CLI, PAGE_HTML, call, createPage, newOwner, open, ownerSocket, publish,
 const note = (text: string) => ({ items: [{ kind: "message" as const, text }] });
 const isError = (code: string) => (f: ReceivedFrame) => f.t === "error" && f.code === code;
 
-/** A published page with an owner socket that has pulled. */
+/** A published unlisted page (open link, no invite needed) with an owner socket that has pulled. */
 async function published(args = {}) {
   const token = await newOwner();
-  const { id, ack } = await publish(token, { args });
+  const { id, ack } = await publish(token, { args: { unlisted: true, ...args } });
   expect(ack.error).toBeUndefined();
   const owner = await ownerSocket(token, id);
   await owner.pull(0);
@@ -186,7 +186,7 @@ describe("roles and credentials", () => {
     expect((await call(`/api/pages/${id}/sync?cli=${CLI}`)).status).toBe(426);
   });
 
-  it("reviewer socket: foreign Origin 403; unpublished 404; flag off 403 unless unlisted", async () => {
+  it("reviewer socket: foreign Origin 403; unpublished 404; no invite 403 unless unlisted", async () => {
     const token = await newOwner();
     const unpublished = await createPage(token);
     expect(((await open(`/p/${unpublished}/sync`, { protocols: ["austere-sync.1"] })) as Response).status).toBe(404);
@@ -197,19 +197,18 @@ describe("roles and credentials", () => {
     const foreign = (await open(`/p/${id}/sync`, { protocols: ["austere-sync.1"], origin: "https://evil.example" })) as Response;
     expect(foreign.status).toBe(403);
 
-    const closed = { ...env, PAGE_ID_AS_CREDENTIAL: "false" };
-    const refused = (await open(`/p/${id}/sync`, { protocols: ["austere-sync.1"], env: closed })) as Response;
+    const refused = (await open(`/p/${id}/sync`, { protocols: ["austere-sync.1"] })) as Response;
     expect(refused.status).toBe(403);
     expect(await refusalCode(refused)).toBe("forbidden");
 
     const { id: open2 } = await publish(token, { args: { unlisted: true } });
-    const viaLink = await open(`/p/${open2}/sync`, { protocols: ["austere-sync.1"], env: closed });
+    const viaLink = await open(`/p/${open2}/sync`, { protocols: ["austere-sync.1"] });
     if (viaLink instanceof Response) throw new Error(`unlisted page refused: ${viaLink.status}`);
     // A publish that clears `unlisted` closes the sockets that came in through the open link.
     await publish(token, { id: open2, args: { unlisted: false } });
     await viaLink.take(isError("forbidden"));
     expect((await viaLink.closedWith()).code).toBe(1008);
-    expect(((await open(`/p/${open2}/sync`, { protocols: ["austere-sync.1"], env: closed })) as Response).status).toBe(403);
+    expect(((await open(`/p/${open2}/sync`, { protocols: ["austere-sync.1"] })) as Response).status).toBe(403);
   });
 });
 
@@ -251,7 +250,7 @@ describe("limits and malformed frames", () => {
     await owner.take(isError("invalid"));
     owner.sendRaw({ v: 1, t: "teleport" });
     await owner.take(isError("invalid"));
-    expect((await owner.mutate("grant", { name: "Ana", tokenHash: "a".repeat(43), expiresAt: null })).error?.code).toBe("invalid");
+    expect((await owner.mutate("revoke", { name: "Nobody" })).error?.code).toBe("invalid");
     expect((await owner.mutate("addReply", { text: "still open" })).error).toBeUndefined();
   });
 
