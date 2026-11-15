@@ -392,14 +392,17 @@ export class PageObject extends DurableObject<Env> {
 
   /**
    * Creates invite `name`, or gives it a new token and expiry. A new token closes the sockets
-   * that came in with the old one; the same token only moves the expiry.
+   * that came in with the old one; the same token only moves the expiry (and revives a revoked
+   * invite). `grantedAt` is when the current token was granted: a re-grant of the same token keeps it,
+   * so an owner peer can tell its own token's grant from a re-grant elsewhere.
    */
   private grant(args: MutationArgs["grant"]): Outcome {
     const now = Date.now();
     if (args.expiresAt !== null && args.expiresAt <= now) return fail("invalid", "grant.expiresAt is in the past");
     const taken = this.sql.exec<{ name: string }>("SELECT name FROM invites WHERE token_hash = ?", args.tokenHash).toArray()[0];
     if (taken && taken.name !== args.name) return fail("invalid", "grant.tokenHash belongs to another invite");
-    const acl = { type: "acl", id: args.name, name: args.name, grantedAt: now, expiresAt: args.expiresAt, revoked: false } as const;
+    const sameToken = taken?.name === args.name ? this.row<AclRow>("acl", args.name) : null;
+    const acl = { type: "acl", id: args.name, name: args.name, grantedAt: sameToken?.grantedAt ?? now, expiresAt: args.expiresAt, revoked: false } as const;
     return {
       apply: () => {
         this.sql.exec(

@@ -113,6 +113,24 @@ describe("invite-only by default", () => {
     expect((await artifact(id, again)).status).toBe(200);
   });
 
+  it("grantedAt belongs to the token: re-granting the same token keeps it, a new token sets it", async () => {
+    const { owner } = await invitePage();
+    const tokenHash = await sha256B64url("a".repeat(43));
+    await owner.mutate("grant", { name: "Ana", tokenHash, expiresAt: null });
+    const first = (await owner.changes()).rows[0] as AclRow;
+    await scheduler.wait(5); // a later clock reading, so a reset grantedAt would differ
+    const later = Date.now() + 86_400_000;
+    await owner.mutate("grant", { name: "Ana", tokenHash, expiresAt: later });
+    const same = (await owner.changes()).rows[0] as AclRow;
+    expect(same).toMatchObject({ grantedAt: first.grantedAt, expiresAt: later });
+    await owner.mutate("revoke", { name: "Ana" });
+    await owner.changes();
+    await owner.mutate("grant", { name: "Ana", tokenHash, expiresAt: null });
+    expect(((await owner.changes()).rows[0] as AclRow).grantedAt).toBe(first.grantedAt);
+    await owner.mutate("grant", { name: "Ana", tokenHash: await sha256B64url("b".repeat(43)), expiresAt: null });
+    expect(((await owner.changes()).rows[0] as AclRow).grantedAt).toBeGreaterThan(first.grantedAt);
+  });
+
   it("grant rejects a past expiry and a token hash another invite holds", async () => {
     const { owner } = await invitePage();
     const tokenHash = await sha256B64url("t".repeat(43));
