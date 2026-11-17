@@ -70,7 +70,8 @@ describe("round trip", () => {
     expect((await again.pull(4))[0]).toMatchObject({ rows: [], cursor: 4 });
   });
 
-  it("pages a large pull in frames of 500 with more:true", async () => {
+  // 520 round trips in sequence: the default 5 s is too tight when every test file runs at once.
+  it("pages a large pull in frames of 500 with more:true", { timeout: 30_000 }, async () => {
     const { owner } = await published();
     for (let i = 0; i < 520; i++) await owner.mutate("addReply", { text: `r${i}` });
     await owner.take((f) => f.t === "changes" && f.cursor === 521); // the last live frame

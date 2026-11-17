@@ -4,6 +4,7 @@ import type { Env } from "./env";
 import { authenticate } from "./auth";
 import { RATE_LIMITS, UNPUBLISHED_MS, hit, ipHash } from "./limits";
 import { putObject } from "./objects";
+import { livePage } from "./serve";
 import { ownerSync } from "./sync";
 import { HttpError, SHA_RE, b64url, json, randomId, sha256Hex } from "./util";
 
@@ -42,6 +43,20 @@ async function listPages(env: Env, request: Request): Promise<Response> {
   });
 }
 
+/**
+ * A single-use code that signs the owner in on their own page in the browser
+ * (`/p/:id?login=<code>`, see serve.ts). Another owner's page is indistinguishable from a missing one.
+ */
+async function ownerLogin(env: Env, request: Request, id: string): Promise<Response> {
+  const owner = await authenticate(env, request);
+  const page = await livePage(env, id);
+  if (page === "gone") throw new HttpError(410, "this page was taken down");
+  if (!page || page.owner_id !== owner.id || page.published_at === null) throw new HttpError(404, "page not found");
+  const answer = await env.PAGE.get(env.PAGE.idFromName(id)).ownerLogin(id);
+  if ("status" in answer) throw new HttpError(answer.status, answer.message);
+  return json(answer);
+}
+
 /** Handles /api/*; returns null for paths it doesn't own. */
 export async function handleApi(request: Request, env: Env, path: string): Promise<Response | null> {
   const m = request.method;
@@ -60,6 +75,8 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
   }
   const sync = /^\/api\/pages\/([^/]+)\/sync$/.exec(path);
   if (sync) return m === "GET" ? ownerSync(request, env, sync[1]) : methodNotAllowed("GET");
+  const login = /^\/api\/pages\/([^/]+)\/login$/.exec(path);
+  if (login) return m === "POST" ? ownerLogin(env, request, login[1]) : methodNotAllowed("POST");
   return null;
 }
 

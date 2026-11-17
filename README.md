@@ -2,6 +2,8 @@
 
 Hosted share links for [austere-axi](https://github.com/MandalorianBatman/austere-axi): `austere-axi publish plan.html --invite Ana` uploads a review page and prints one link per invited reviewer (`/p/<id>#i=<token>`); invites are named and revocable, and an open link is opt-in (`--unlisted`).
 
+The owner opens their own hosted page in the browser with `austere-axi publish login <file>`: the CLI asks `POST /api/pages/:id/login` for a single-use code and opens `/p/<id>?login=<code>`, which trades it for a page-scoped `austere_owner` cookie (30 days). The public shell holds nothing about the page, not even its title; that comes with access.
+
 A Cloudflare Worker (TypeScript) with D1 for the owner's index, R2 for content-addressed objects, and one SQLite-backed Durable Object per page that owns its notes, replies and change feed. The CLI and the reviewer chrome talk to the page object over a WebSocket using the `austere-axi/sync` protocol. Implementation notes: [docs/design.md](docs/design.md); the contract: [austere-axi docs/hosted-share-links.md](https://github.com/MandalorianBatman/austere-axi/blob/main/docs/hosted-share-links.md).
 
 ## Develop

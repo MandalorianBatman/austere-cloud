@@ -148,13 +148,14 @@ export class Client {
   }
 }
 
-type SocketInit = { protocols?: string[]; origin?: string | null; ip?: string; env?: Env; clientId?: string };
+type SocketInit = { protocols?: string[]; origin?: string | null; ip?: string; env?: Env; clientId?: string; cookie?: string };
 
 /** Opens a socket at `path`; resolves to a Client on 101, or to the refusal Response. */
 export async function open(path: string, init: SocketInit = {}): Promise<Client | Response> {
   const headers: Record<string, string> = { upgrade: "websocket" };
   if (init.protocols) headers["sec-websocket-protocol"] = init.protocols.join(", ");
   if (init.origin !== null) headers.origin = init.origin ?? ORIGIN;
+  if (init.cookie !== undefined) headers.cookie = init.cookie;
   const res = await call(path, { headers, ip: init.ip, env: init.env });
   if (res.status !== 101 || !res.webSocket) return res;
   if (res.headers.get("sec-websocket-protocol") !== "austere-sync.1") throw new Error(`answered protocol ${res.headers.get("sec-websocket-protocol")}`);
@@ -191,9 +192,11 @@ export async function invite(token: string, id: string, name = "Ana", expiresAt:
   return t;
 }
 
-/** POST /p/:id/asset-token with the invite (if any) in X-Austere-Invite. */
-export function assetToken(id: string, invite?: string, init: { ip?: string } = {}): Promise<Response> {
-  return call(`/p/${id}/asset-token`, { method: "POST", headers: invite === undefined ? {} : { "x-austere-invite": invite }, ip: init.ip });
+/** POST /p/:id/asset-token with the invite (if any) in X-Austere-Invite, and a Cookie header if given. */
+export function assetToken(id: string, invite?: string, init: { ip?: string; cookie?: string } = {}): Promise<Response> {
+  const headers: Record<string, string> = invite === undefined ? {} : { "x-austere-invite": invite };
+  if (init.cookie !== undefined) headers.cookie = init.cookie;
+  return call(`/p/${id}/asset-token`, { method: "POST", headers, ip: init.ip });
 }
 
 /** The artifact as the chrome loads it: trade the invite for an asset token, then GET /p/:id/a/<token>/. */

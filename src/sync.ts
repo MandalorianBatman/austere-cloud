@@ -7,7 +7,7 @@ import { ownerByToken } from "./auth";
 import { ipHash } from "./limits";
 import { versionAllowed } from "./runtime";
 import { livePage } from "./serve";
-import { HttpError, json, sha256B64url } from "./util";
+import { HttpError, json, ownerCookie, sha256B64url } from "./util";
 
 /** Who a socket belongs to, set by the Worker and read by the page object. */
 export interface Identity {
@@ -18,6 +18,8 @@ export interface Identity {
   ipHash: string;
   /** The SHA-256 (base64url) of the invite token a reviewer offered; the token itself stays in the Worker. */
   invite?: string;
+  /** The SHA-256 (base64url) of the owner's sign-in session token (the `austere_owner` cookie), on reviewer sockets. */
+  session?: string;
 }
 
 export const IDENTITY_HEADER = "x-austere-identity";
@@ -80,7 +82,10 @@ async function reviewablePage(env: Env, id: string): Promise<void> {
   if (!page || page.published_at === null) throw new HttpError(404, "page not found");
 }
 
-/** GET /p/:id/sync: the reviewer chrome. The invite rides in Sec-WebSocket-Protocol. */
+/**
+ * GET /p/:id/sync: the reviewer chrome. The invite rides in Sec-WebSocket-Protocol; the owner's
+ * sign-in session in the `austere_owner` cookie, which the page object prefers when it is live.
+ */
 export function reviewerSync(request: Request, env: Env, id: string): Promise<Response> {
   return guarded(async () => {
     sameOrigin(request);
@@ -91,6 +96,8 @@ export function reviewerSync(request: Request, env: Env, id: string): Promise<Re
     if (!versionAllowed(env, page.cli_version)) throw new HttpError(426, `this page needs republishing with austere-axi ${env.MIN_CLI_VERSION} or later`);
     const identity: Identity = { page: id, role: "reviewer", ipHash: await ipHash(env, request) };
     if (creds.invite !== undefined) identity.invite = await sha256B64url(creds.invite);
+    const session = ownerCookie(request);
+    if (session !== null) identity.session = await sha256B64url(session);
     return toPage(env, identity);
   });
 }
@@ -98,14 +105,24 @@ export function reviewerSync(request: Request, env: Env, id: string): Promise<Re
 export const INVITE_HEADER = "x-austere-invite";
 const TOKEN_RE = /^[A-Za-z0-9_-]{16,256}$/;
 
-/** POST /p/:id/asset-token: trades the invite (X-Austere-Invite) for the frame's asset token. */
+/**
+ * POST /p/:id/asset-token: trades the owner's live sign-in session (the `austere_owner` cookie)
+ * or else the invite (X-Austere-Invite) for the frame's asset token. A cookie that is not a live
+ * session is ignored.
+ */
 export function assetToken(request: Request, env: Env, id: string): Promise<Response> {
   return guarded(async () => {
     sameOrigin(request);
     await reviewablePage(env, id);
+    const stub = env.PAGE.get(env.PAGE.idFromName(id));
+    const session = ownerCookie(request);
+    if (session !== null) {
+      const owner = await stub.ownerAssetToken(id, await sha256B64url(session));
+      if (owner) return json(owner);
+    }
     const invite = request.headers.get(INVITE_HEADER);
     if (invite !== null && !TOKEN_RE.test(invite)) throw new HttpError(403, "this invite is not valid");
-    const answer = await env.PAGE.get(env.PAGE.idFromName(id)).assetToken(id, invite === null ? undefined : await sha256B64url(invite));
+    const answer = await stub.assetToken(id, invite === null ? undefined : await sha256B64url(invite));
     if ("status" in answer) throw new HttpError(answer.status, answer.message);
     return json(answer);
   });

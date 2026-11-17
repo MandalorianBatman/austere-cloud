@@ -48,10 +48,11 @@ export function declaredName(name: string | undefined): string {
 }
 
 /**
- * The roster name of a socket: `Owner`; an invited reviewer's invite name; on the open link the
- * name prompt's `hello.name` (`declaredName`).
+ * The roster name of a socket: `Owner` (the owner socket, or a reviewer socket the owner's sign-in
+ * session let in); an invited reviewer's invite name; on the open link the name prompt's
+ * `hello.name` (`declaredName`). `assigned` is the server-set name, if any.
  */
-export function viewerName(role: Role, invite: string | undefined, declared: string | undefined): string {
+export function viewerName(role: Role, assigned: string | undefined, declared: string | undefined): string {
   if (role === "owner") return "Owner";
-  return invite ?? declaredName(declared);
+  return assigned ?? declaredName(declared);
 }
