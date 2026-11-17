@@ -34,6 +34,21 @@ export async function hmacHex(key: string, data: string): Promise<string> {
 export const PAGE_ID_RE = /^[A-Za-z0-9_-]{22}$/;
 export const SHA_RE = /^[0-9a-f]{64}$/;
 
+/** The owner's page-scoped sign-in cookie (`Path=/p/<id>`): a session token, 32 random bytes base64url. */
+export const OWNER_COOKIE = "austere_owner";
+const SESSION_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+
+/** The well-formed `austere_owner` token in the request's Cookie header, or null. */
+export function ownerCookie(request: Request): string | null {
+  for (const part of (request.headers.get("cookie") ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0 || part.slice(0, eq).trim() !== OWNER_COOKIE) continue;
+    const value = part.slice(eq + 1).trim();
+    if (SESSION_TOKEN_RE.test(value)) return value;
+  }
+  return null;
+}
+
 /** Thrown by handlers to produce an error response. */
 export class HttpError extends Error {
   constructor(

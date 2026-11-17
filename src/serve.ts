@@ -1,17 +1,19 @@
-// Public serving: the chrome shell (/p/:id), the sandboxed artifact (/p/:id/a/<assetToken>/)
-// and pack objects (/pk/<sha>.js).
+// Public serving: the chrome shell (/p/:id), the owner's sign-in (/p/:id?login=<code>), the
+// sandboxed artifact (/p/:id/a/<assetToken>/) and pack objects (/pk/<sha>.js).
 import type { Env } from "./env";
 import { JS_TYPE, objectKey } from "./objects";
-import { PAGE_ID_RE, SHA_RE, sha256B64url } from "./util";
+import { OWNER_SESSION_MS } from "./page";
+import { OWNER_COOKIE, PAGE_ID_RE, SHA_RE, sha256B64url } from "./util";
 
-const plain = (text: string, status: number) =>
-  new Response(text, { status, headers: { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" };
+const plain = (text: string, status: number) => new Response(text, { status, headers: PRIVATE });
 const NOT_FOUND = () => plain("not found", 404);
 const GONE = () => plain("gone", 410);
 const FORBIDDEN = () => plain("forbidden", 403);
 const ASSET_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
-
-const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+/** What the shell calls every page: the real title is only in the asset-token answer, after access is granted. */
+const SHELL_TITLE = "Shared page";
+const LOGIN_FAILED = "This sign-in link was used already or has expired. Run `austere-axi publish login <file>` for a new one.";
 
 export interface PageRow {
   id: string;
@@ -64,9 +66,9 @@ async function shell(env: Env, id: string): Promise<Response> {
   const base = `/p/${page.id}`;
   const boot = {
     id: page.id,
-    title: page.title,
+    title: SHELL_TITLE,
     file: "",
-    name: page.title,
+    name: SHELL_TITLE,
     // A prefix: the chrome trades its invite at `${base}/asset-token` and loads `${artifactUrl}<assetToken>/`.
     artifactUrl: `${base}/a/`,
     version: page.cli_version,
@@ -84,7 +86,7 @@ async function shell(env: Env, id: string): Promise<Response> {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
-<title>${escapeHtml(page.title)} · austere</title>
+<title>${SHELL_TITLE} · austere</title>
 <link rel="stylesheet" href="${rt}/chrome/chrome.css">
 <script>${bootScript}</script>
 <script src="${rt}/chrome/chrome.js" defer></script>
@@ -99,6 +101,29 @@ async function shell(env: Env, id: string): Promise<Response> {
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
       "cache-control": "no-cache",
+    },
+  });
+}
+
+/**
+ * `GET /p/:id?login=<code>`: trades a live owner sign-in code (`POST /api/pages/:id/login`) for the
+ * page-scoped `austere_owner` session cookie, then redirects to the bare page URL so the code
+ * leaves the address bar. A code works once.
+ */
+async function ownerSignIn(request: Request, env: Env, id: string, code: string): Promise<Response> {
+  const page = await publishedPage(env, id);
+  if (page === "gone") return GONE();
+  if (!page) return NOT_FOUND();
+  const session = ASSET_TOKEN_RE.test(code) ? await env.PAGE.get(env.PAGE.idFromName(id)).ownerSession(id, await sha256B64url(code)) : null;
+  if (!session) return plain(LOGIN_FAILED, 403);
+  const base = `/p/${page.id}`;
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return new Response(null, {
+    status: 303,
+    headers: {
+      ...PRIVATE,
+      location: base,
+      "set-cookie": `${OWNER_COOKIE}=${session.token}; Path=${base}; HttpOnly; SameSite=Lax; Max-Age=${OWNER_SESSION_MS / 1000}${secure}`,
     },
   });
 }
@@ -143,7 +168,7 @@ async function pack(env: Env, sha: string): Promise<Response> {
   });
 }
 
-/** Handles GET /p/:id, /p/:id/a/<assetToken>/ and /pk/<sha>.js; null for other paths. */
+/** Handles GET /p/:id (and its `?login=` trade), /p/:id/a/<assetToken>/ and /pk/<sha>.js; null for other paths. */
 export async function handleServe(request: Request, env: Env, path: string): Promise<Response | null> {
   const page = /^\/p\/([^/]+)(\/a\/(?:([^/]*)\/)?)?$/.exec(path);
   const pk = /^\/pk\/([^/]+)\.js$/.exec(path);
@@ -153,5 +178,7 @@ export async function handleServe(request: Request, env: Env, path: string): Pro
   }
   if (pk) return pack(env, pk[1]);
   if (page![2]) return artifact(env, page![1], page![3] ?? "");
+  const login = new URL(request.url).searchParams.get("login");
+  if (login !== null && request.method === "GET") return ownerSignIn(request, env, page![1], login);
   return shell(env, page![1]);
 }

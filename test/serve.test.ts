@@ -22,11 +22,12 @@ describe("hosted page headers", () => {
     expect(csp.match(/script-src[^;]*/)![0]).not.toContain("unsafe-inline");
   });
 
-  it("shell boot has the design's fields and can't be broken out of through the title", async () => {
+  it("shell boot has the design's fields and never carries the page title", async () => {
     const body = await publish(await newOwner(), { args: { title: `</script><img src=x onerror=alert(1)>` } });
     const html = await (await call(`/p/${body.id}`)).text();
     expect(html).not.toContain("</script><img");
-    expect(html).toContain("&lt;/script&gt;");
+    expect(html).not.toContain("onerror");
+    expect(html).toContain("<title>Shared page · austere</title>");
     const boot = JSON.parse(/window\.__AUSTERE__=(.*?)<\/script>/.exec(html)![1].replace(/\\u003c/g, "<"));
     expect(boot).toMatchObject({
       id: body.id,
@@ -35,7 +36,7 @@ describe("hosted page headers", () => {
       artifactUrl: `/p/${body.id}/a/`,
       version: CLI,
     });
-    expect(boot.title).toBe(`</script><img src=x onerror=alert(1)>`);
+    expect(boot).toMatchObject({ title: "Shared page", name: "Shared page" });
   });
 
   it("artifact: sandbox CSP without allow-same-origin, no network, noindex", async () => {

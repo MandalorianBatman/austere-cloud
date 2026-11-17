@@ -41,6 +41,12 @@ const MAX_PACKS = 16;
 const MAX_TITLE = 200;
 /** How long an asset token (the sandboxed frame's credential) is valid. */
 export const ASSET_TOKEN_MS = 10 * 60 * 1000;
+/** How long an owner sign-in code (`POST /api/pages/:id/login`) can be traded at `/p/:id?login=<code>`. */
+export const OWNER_LOGIN_MS = 60_000;
+/** How long an owner session (the `austere_owner` cookie) lasts. */
+export const OWNER_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+/** The name the owner signed in on the page goes by (as on the owner socket): roster, note author, asset-token answer. */
+export const OWNER_NAME = "Owner";
 
 /** What each socket's attachment holds; it survives hibernation. */
 interface SocketState {
@@ -51,6 +57,11 @@ interface SocketState {
   live: boolean;
   /** A reviewer let in by an invite: its name, token hash and expiry. Revoke, re-grant or expiry closes the socket. */
   invite?: { name: string; hash: string; expiresAt: number | null };
+  /**
+   * A reviewer socket let in by the owner's sign-in session (the `austere_owner` cookie): its
+   * hash and expiry. Expiry closes it; it outranks any invite offered with it.
+   */
+  session?: { hash: string; expiresAt: number };
   /** A reviewer let in only because the page was unlisted: a publish that clears `unlisted` closes it. */
   viaUnlisted?: boolean;
   /** Set by the socket's first `hello`, removed by `bye`, close, or a `publish` that turns presence off. */
@@ -62,8 +73,14 @@ interface SocketState {
 /** Who may read a page as a reviewer: an invite (by name), the open link, or nobody (`status`). */
 export type ReviewerAccess = { invite: { name: string; hash: string; expiresAt: number | null } | null } | { status: 403 | 404; message: string };
 
+/** A granted asset token. `title` reaches the chrome only here, never in the public shell. */
+export type AssetToken = { token: string; expiresAt: number; name: string | null; title: string; owner: boolean };
+
 /** The answer to `POST /p/:id/asset-token`. */
-export type AssetTokenAnswer = { token: string; expiresAt: number; name: string | null } | { status: 403 | 404; message: string };
+export type AssetTokenAnswer = AssetToken | { status: 403 | 404; message: string };
+
+/** The answer to `POST /api/pages/:id/login`. */
+export type OwnerLoginAnswer = { code: string; ttlMs: number } | { status: 404; message: string };
 
 /** A mutation either fails, or is applied by `apply` inside the storage transaction. */
 type Outcome = { error: SyncError } | { apply: () => Row[]; after?: () => Promise<void> };
@@ -102,9 +119,16 @@ export class PageObject extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS invites (
         name TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, expires_at INTEGER, revoked INTEGER NOT NULL DEFAULT 0
       );
-      -- Asset tokens (SHA-256, base64url) for the sandboxed frame. invite_hash is NULL for the open link.
-      CREATE TABLE IF NOT EXISTS asset_tokens (token_hash TEXT PRIMARY KEY, invite_hash TEXT, expires_at INTEGER NOT NULL);
+      -- Asset tokens (SHA-256, base64url) for the sandboxed frame. invite_hash is NULL for the open link;
+      -- session_hash is set for tokens issued to the owner's sign-in session (added below for older objects).
+      CREATE TABLE IF NOT EXISTS asset_tokens (token_hash TEXT PRIMARY KEY, invite_hash TEXT, expires_at INTEGER NOT NULL, session_hash TEXT);
+      -- Single-use owner sign-in codes and the owner sessions they start. Only SHA-256 (base64url) is stored.
+      CREATE TABLE IF NOT EXISTS owner_logins (code_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS owner_sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
     `);
+    // Objects created before owner sign-in have asset_tokens without session_hash; their rows keep NULL (not a session's).
+    const cols = this.sql.exec<{ name: string }>("PRAGMA table_info(asset_tokens)").toArray();
+    if (!cols.some((c) => c.name === "session_hash")) this.sql.exec("ALTER TABLE asset_tokens ADD COLUMN session_hash TEXT");
   }
 
   /** The Worker's hand-off of an upgraded, already authenticated socket. */
@@ -114,14 +138,20 @@ export class PageObject extends DurableObject<Env> {
     this.sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('page', ?)", identity.page);
     const state: SocketState = { role: identity.role, owner: identity.owner, ipHash: identity.ipHash, live: false };
     if (identity.role === "reviewer") {
-      const access = this.reviewerAccess(identity.invite);
-      if ("status" in access) return refusal(access.status, access.message);
-      if (access.invite) state.invite = access.invite;
-      else state.viaUnlisted = true;
+      // The owner's live sign-in session wins over any invite offered with it.
+      const session = identity.session === undefined ? null : this.liveSession(identity.session);
+      if (session) state.session = session;
+      else {
+        const access = this.reviewerAccess(identity.invite);
+        if ("status" in access) return refusal(access.status, access.message);
+        if (access.invite) state.invite = access.invite;
+        else state.viaUnlisted = true;
+      }
     }
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(state);
+    if (state.session) await this.scheduleAlarm();
     return new Response(null, { status: 101, webSocket: client, headers: { "sec-websocket-protocol": SUBPROTOCOL } });
   }
 
@@ -149,30 +179,97 @@ export class PageObject extends DurableObject<Env> {
     return row ? { name: row.name, hash, expiresAt: row.expires_at } : null;
   }
 
+  /** The live owner session with this token hash, on a page that is not deleted. */
+  private liveSession(hash: string): { hash: string; expiresAt: number } | null {
+    const row = this.sql.exec<{ expires_at: number }>("SELECT expires_at FROM owner_sessions WHERE token_hash = ? AND expires_at > ?", hash, Date.now()).toArray()[0];
+    if (!row) return null;
+    const page = this.pageRow();
+    return page && !page.deleted ? { hash, expiresAt: row.expires_at } : null;
+  }
+
+  /** RPC for `POST /api/pages/:id/login` (the Worker checked the owner): a single-use sign-in code; only its hash is kept. */
+  async ownerLogin(page: string): Promise<OwnerLoginAnswer> {
+    this.sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('page', ?)", page);
+    const row = this.pageRow();
+    if (!row || row.deleted) return { status: 404, message: "page not found" };
+    const code = randomId(32);
+    const hash = await sha256B64url(code);
+    const now = Date.now();
+    this.sql.exec("DELETE FROM owner_logins WHERE expires_at <= ?", now);
+    this.sql.exec("INSERT INTO owner_logins (code_hash, expires_at) VALUES (?, ?)", hash, now + OWNER_LOGIN_MS);
+    return { code, ttlMs: OWNER_LOGIN_MS };
+  }
+
+  /**
+   * RPC for `GET /p/:id?login=<code>`: consumes a live sign-in code and starts an owner session;
+   * null for a used, expired or unknown code. Only the session token's hash is kept.
+   */
+  async ownerSession(page: string, codeHash: string): Promise<{ token: string; expiresAt: number } | null> {
+    this.sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('page', ?)", page);
+    const row = this.pageRow();
+    if (!row || row.deleted) return null;
+    const token = randomId(32);
+    const hash = await sha256B64url(token);
+    // No await from here on: the code is consumed and the session written in one go, so a code works once.
+    const now = Date.now();
+    this.sql.exec("DELETE FROM owner_logins WHERE expires_at <= ?", now);
+    if (!this.sql.exec("DELETE FROM owner_logins WHERE code_hash = ? RETURNING code_hash", codeHash).toArray().length) return null;
+    const expiresAt = now + OWNER_SESSION_MS;
+    this.sql.exec("DELETE FROM owner_sessions WHERE expires_at <= ?", now);
+    this.sql.exec("INSERT INTO owner_sessions (token_hash, expires_at) VALUES (?, ?)", hash, expiresAt);
+    return { token, expiresAt };
+  }
+
+  /** RPC for `POST /p/:id/asset-token` with the owner cookie: an owner asset token, or null when the session is not live. */
+  async ownerAssetToken(page: string, sessionHash: string): Promise<AssetToken | null> {
+    this.sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('page', ?)", page);
+    const session = this.liveSession(sessionHash);
+    return session ? this.issueAssetToken(null, session.hash) : null;
+  }
+
   /** RPC for `POST /p/:id/asset-token`: trades reviewer access for a short-lived, page-scoped asset token. */
   async assetToken(page: string, inviteHash: string | undefined): Promise<AssetTokenAnswer> {
     this.sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('page', ?)", page);
     const access = this.reviewerAccess(inviteHash);
     if ("status" in access) return access;
+    return this.issueAssetToken(access.invite, null);
+  }
+
+  /** An asset token for an invite (null: the open link), or for an owner session. */
+  private async issueAssetToken(invite: { name: string; hash: string } | null, sessionHash: string | null): Promise<AssetToken> {
     const token = randomId(32);
+    const hash = await sha256B64url(token);
     const now = Date.now();
     const expiresAt = now + ASSET_TOKEN_MS;
     this.sql.exec("DELETE FROM asset_tokens WHERE expires_at <= ?", now);
-    this.sql.exec("INSERT INTO asset_tokens (token_hash, invite_hash, expires_at) VALUES (?, ?, ?)", await sha256B64url(token), access.invite?.hash ?? null, expiresAt);
-    return { token, expiresAt, name: access.invite?.name ?? null };
+    this.sql.exec(
+      "INSERT INTO asset_tokens (token_hash, invite_hash, session_hash, expires_at) VALUES (?, ?, ?, ?)",
+      hash,
+      invite?.hash ?? null,
+      sessionHash,
+      expiresAt,
+    );
+    const title = this.pageRow()?.title ?? "";
+    if (sessionHash !== null) return { token, expiresAt, name: OWNER_NAME, title, owner: true };
+    return { token, expiresAt, name: invite?.name ?? null, title, owner: false };
   }
 
   /**
    * RPC for `GET /p/:id/a/<assetToken>/`: whether the token is unexpired and what it was issued
-   * against still holds (its invite is live, or the page is still unlisted).
+   * against still holds (the owner session or invite is live, or the page is still unlisted).
    */
   async assetAllowed(tokenHash: string): Promise<boolean> {
     const row = this.sql
-      .exec<{ invite_hash: string | null }>("SELECT invite_hash FROM asset_tokens WHERE token_hash = ? AND expires_at > ?", tokenHash, Date.now())
+      .exec<{ invite_hash: string | null; session_hash: string | null }>(
+        "SELECT invite_hash, session_hash FROM asset_tokens WHERE token_hash = ? AND expires_at > ?",
+        tokenHash,
+        Date.now(),
+      )
       .toArray()[0];
     if (!row) return false;
     const page = this.pageRow();
     if (!page || page.deleted) return false;
+    if (row.session_hash !== null) return this.liveSession(row.session_hash) !== null;
     return row.invite_hash === null ? page.unlisted : this.liveInvite(row.invite_hash) !== null;
   }
 
@@ -188,9 +285,9 @@ export class PageObject extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const expires = attachment(ws).invite?.expiresAt;
-    if (expires != null && expires <= Date.now()) {
-      this.send(ws, errorFrame("forbidden", "this invite has expired"));
+    const expired = expiredAccess(attachment(ws), Date.now());
+    if (expired) {
+      this.send(ws, errorFrame("forbidden", expired));
       this.leave(ws);
       return ws.close(1008, "forbidden");
     }
@@ -375,12 +472,12 @@ export class PageObject extends DurableObject<Env> {
     const page = this.pageRow();
     if (!page || page.deleted) return fail("invalid", "the page is not published");
     const id = this.pageId();
-    // Invited reviewers are counted per invite, the open link per IP.
-    const who = state.invite ? `i:${state.invite.name}` : state.ipHash;
+    // Invited reviewers are counted per invite, the signed-in owner as one, the open link per IP.
+    const who = state.session ? "owner" : state.invite ? `i:${state.invite.name}` : state.ipHash;
     const retry = await take(this.env, `note:${id}:${who}`, RATE_LIMITS.notesPerReviewerPerPage);
     if (retry !== null) return fail("rate_limited", "note limit reached for this page; try again later", retry);
-    // An invited reviewer is named by the invite; the open link names itself.
-    const author = state.invite?.name ?? declaredName(args.name);
+    // An invited reviewer is named by the invite, the signed-in owner `Owner`; the open link names itself.
+    const author = assignedName(state) ?? declaredName(args.name);
     const note = { type: "note", id: randomId(12), author, items: args.items, at: Date.now(), state: page.auto ? "released" : "held" } as const;
     return {
       apply: () => [this.put(note)],
@@ -623,7 +720,7 @@ export class PageObject extends DurableObject<Env> {
   private async join(ws: WebSocket, hello: HelloFrame): Promise<void> {
     const state = attachment(ws);
     // On the open link a second hello may carry a name the reviewer has just given (the chrome's name prompt).
-    const name = viewerName(state.role, state.invite?.name, hello.name);
+    const name = viewerName(state.role, assignedName(state), hello.name);
     // Another socket under the same name shares its colour; other names present keep theirs.
     const others = this.viewers().flatMap(([s, v]) => (s === ws ? [] : [v]));
     const colour =
@@ -655,26 +752,33 @@ export class PageObject extends DurableObject<Env> {
   }
 
   /**
-   * The object's one alarm serves two deadlines: the next invite expiry, and the next viewer that
-   * would go silent (presence). Set to the earlier; deleted when there is neither.
+   * The object's one alarm serves two deadlines: the next invite or open owner-session expiry,
+   * and the next viewer that would go silent (presence). Set to the earlier; deleted when there is neither.
    */
   private async scheduleAlarm(): Promise<void> {
     const now = Date.now();
     const invite = this.sql.exec<{ at: number | null }>("SELECT MIN(expires_at) AS at FROM invites WHERE revoked = 0 AND expires_at > ?", now).one().at;
     let next = invite ?? Infinity;
+    for (const ws of this.ctx.getWebSockets()) {
+      const session = attachment(ws).session;
+      if (session) next = Math.min(next, session.expiresAt);
+    }
     for (const [, v] of this.viewers()) if (!v.gone) next = Math.min(next, v.last + EXPIRE_MS);
     if (next === Infinity) await this.ctx.storage.deleteAlarm();
     else await this.ctx.storage.setAlarm(Math.max(next, now));
   }
 
   /**
-   * Closes the reviewer sockets of invites that have expired; viewers silent for EXPIRE_MS go (the
-   * others get `bye`); then re-arms for the next deadline.
+   * Closes the reviewer sockets of invites and owner sessions that have expired; viewers silent
+   * for EXPIRE_MS go (the others get `bye`); then re-arms for the next deadline.
    */
   async alarm(): Promise<void> {
     const now = Date.now();
     this.closeReviewers((s) => s.invite?.expiresAt != null && s.invite.expiresAt <= now, "this invite has expired");
+    this.closeReviewers((s) => s.session !== undefined && s.session.expiresAt <= now, "this sign-in has expired");
     this.sql.exec("DELETE FROM asset_tokens WHERE expires_at <= ?", now);
+    this.sql.exec("DELETE FROM owner_logins WHERE expires_at <= ?", now);
+    this.sql.exec("DELETE FROM owner_sessions WHERE expires_at <= ?", now);
     for (const [ws, v] of this.viewers()) {
       if (v.gone || now - v.last < EXPIRE_MS) continue;
       this.setViewer(ws, { ...v, gone: true });
@@ -686,6 +790,18 @@ export class PageObject extends DurableObject<Env> {
 
 function attachment(ws: WebSocket): SocketState {
   return ws.deserializeAttachment() as SocketState;
+}
+
+/** Why a reviewer socket's credential has run out (its invite or the owner's session), or null. */
+function expiredAccess(s: SocketState, now: number): string | null {
+  if (s.invite?.expiresAt != null && s.invite.expiresAt <= now) return "this invite has expired";
+  if (s.session && s.session.expiresAt <= now) return "this sign-in has expired";
+  return null;
+}
+
+/** A reviewer socket's name when the server sets it: `Owner` for the owner's session, else the invite name. */
+function assignedName(s: SocketState): string | undefined {
+  return s.session ? OWNER_NAME : s.invite?.name;
 }
 
 function ackFrame(key: MutationKey, error?: SyncError): AckFrame {
