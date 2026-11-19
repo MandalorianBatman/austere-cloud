@@ -1,0 +1,137 @@
+// Accounts in D1 (RLM-414): users, the owners they hold, and who may open a page.
+// A page's owner is its `owner_id`; any account that holds that owner is the owner on the page.
+// A collaborator is an account whose email has a grant on the page.
+import type { Env } from "./env";
+import { reservedName } from "./presence";
+import type { PageRow } from "./serve";
+import { fetchUser, type WorkosUser } from "./workos";
+import { HttpError, randomId, sha256Hex } from "./util";
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+}
+
+export type PageRole = "owner" | "collaborator";
+
+/** How a collaborator is shown: the account's name, else its email; never a reserved name. */
+export function displayName(user: User): string {
+  const name = user.name.trim();
+  return name && !reservedName(name) ? name : user.email;
+}
+
+export const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
+
+/** A grant's email: trimmed, lowercased, or a 400. */
+export function normalEmail(email: unknown): string {
+  const e = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!EMAIL_RE.test(e)) throw new HttpError(400, "email must be an email address");
+  return e;
+}
+
+/** Writes what WorkOS says about the user (every browser sign-in refreshes it). */
+export async function upsertUser(env: Env, u: WorkosUser): Promise<User> {
+  const user = { id: u.id, email: u.email.trim().toLowerCase(), name: [u.first_name, u.last_name].filter(Boolean).join(" ").trim() };
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO users (id, email, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)
+     ON CONFLICT (id) DO UPDATE SET email = excluded.email, name = excluded.name, updated_at = excluded.updated_at`,
+  )
+    .bind(user.id, user.email, user.name, now)
+    .run();
+  return user;
+}
+
+export function userById(env: Env, id: string): Promise<User | null> {
+  return env.DB.prepare("SELECT id, email, name FROM users WHERE id = ?").bind(id).first<User>();
+}
+
+/** The user behind a verified token: from D1, else looked up at WorkOS once and kept. */
+export async function ensureUser(env: Env, id: string): Promise<User> {
+  return (await userById(env, id)) ?? upsertUser(env, await fetchUser(env, id));
+}
+
+/**
+ * The owner the account publishes new pages as: its oldest owner (one it claimed, or the one made
+ * for it), created on first use. 403 when it is blocked.
+ */
+export async function accountOwner(env: Env, userId: string): Promise<string> {
+  const pick = () =>
+    env.DB.prepare("SELECT id, blocked FROM owners WHERE user_id = ? ORDER BY created_at, id LIMIT 1").bind(userId).first<{ id: string; blocked: number }>();
+  let row = await pick();
+  if (!row) {
+    // An account's own owner has no usable bearer token: the hash is of random bytes nobody keeps.
+    await env.DB.prepare("INSERT INTO owners (id, token_hash, created_at, user_id) VALUES (?, ?, ?, ?)")
+      .bind(randomId(), await sha256Hex(randomId(32)), Date.now(), userId)
+      .run();
+    row = (await pick())!;
+  }
+  if (row.blocked) throw new HttpError(403, "this owner is blocked");
+  return row.id;
+}
+
+/**
+ * Links anonymous owner `token` to the account, so the account owns its pages. Claiming it again is
+ * a no-op; a token another account claimed is 409, an unknown one 404.
+ */
+export async function claimOwner(env: Env, userId: string, token: string): Promise<{ pages: number }> {
+  const row = await env.DB.prepare("SELECT id, user_id, blocked FROM owners WHERE token_hash = ?")
+    .bind(await sha256Hex(token))
+    .first<{ id: string; user_id: string | null; blocked: number }>();
+  if (!row) throw new HttpError(404, "unknown owner token");
+  if (row.blocked) throw new HttpError(403, "this owner is blocked");
+  if (row.user_id !== null && row.user_id !== userId) throw new HttpError(409, "this owner token belongs to another account");
+  if (row.user_id === null) await env.DB.prepare("UPDATE owners SET user_id = ? WHERE id = ? AND user_id IS NULL").bind(userId, row.id).run();
+  const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM pages WHERE owner_id = ?").bind(row.id).first<{ n: number }>();
+  return { pages: n?.n ?? 0 };
+}
+
+/** The account's role on a page: owner, collaborator (a grant for its email), or none. */
+export async function pageRole(env: Env, page: Pick<PageRow, "id" | "owner_user_id">, user: User): Promise<PageRole | null> {
+  if (page.owner_user_id !== null && page.owner_user_id === user.id) return "owner";
+  const grant = await env.DB.prepare("SELECT 1 AS ok FROM grants WHERE page_id = ? AND email = ?").bind(page.id, user.email).first();
+  return grant ? "collaborator" : null;
+}
+
+/** Whether an account let in as owner (or collaborator) still is one on the page: checked again when its artifact loads and when grants change. */
+export async function accessHolds(env: Env, pageId: string, access: { user: string; email: string; owner: boolean }): Promise<boolean> {
+  if (access.owner) {
+    const row = await env.DB.prepare("SELECT o.user_id FROM pages p JOIN owners o ON o.id = p.owner_id WHERE p.id = ?").bind(pageId).first<{ user_id: string | null }>();
+    return row?.user_id === access.user;
+  }
+  return !!(await env.DB.prepare("SELECT 1 AS ok FROM grants WHERE page_id = ? AND email = ?").bind(pageId, access.email).first());
+}
+
+export interface Grant {
+  email: string;
+  role: PageRole;
+  createdAt: number;
+}
+
+export async function listGrants(env: Env, pageId: string): Promise<Grant[]> {
+  const { results } = await env.DB.prepare("SELECT email, role, created_at FROM grants WHERE page_id = ? ORDER BY created_at, email")
+    .bind(pageId)
+    .all<{ email: string; role: PageRole; created_at: number }>();
+  return results.map((r) => ({ email: r.email, role: r.role, createdAt: r.created_at }));
+}
+
+/** Most grants one page may hold. */
+export const MAX_GRANTS = 100;
+
+/** Grants page `pageId` to `email`. Returns false when the grant was there already. */
+export async function addGrant(env: Env, pageId: string, email: string): Promise<boolean> {
+  const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM grants WHERE page_id = ?").bind(pageId).first<{ n: number }>();
+  if ((n?.n ?? 0) >= MAX_GRANTS) throw new HttpError(400, `a page may have at most ${MAX_GRANTS} grants`);
+  const r = await env.DB.prepare("INSERT OR IGNORE INTO grants (page_id, email, role, created_at) VALUES (?, ?, 'collaborator', ?)")
+    .bind(pageId, email, Date.now())
+    .run();
+  return r.meta.changes > 0;
+}
+
+/** Removes the grant; the page object then closes that account's sockets. Returns false when there was none. */
+export async function removeGrant(env: Env, pageId: string, email: string): Promise<boolean> {
+  const r = await env.DB.prepare("DELETE FROM grants WHERE page_id = ? AND email = ?").bind(pageId, email).run();
+  if (r.meta.changes > 0) await env.PAGE.get(env.PAGE.idFromName(pageId)).accessChanged();
+  return r.meta.changes > 0;
+}

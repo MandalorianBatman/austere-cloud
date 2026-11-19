@@ -18,7 +18,9 @@ migrations_dir = "migrations"
 binding = "PAGES"
 bucket_name = "austere-cloud-pages"
 
-# Secrets (wrangler secret put): IP_HMAC_KEY now; ADMIN_TOKEN and ADMIN_EMAIL arrive with the admin ticket.
+# Secrets (wrangler secret put): IP_HMAC_KEY; WORKOS_CLIENT_ID, WORKOS_API_KEY and WORKOS_COOKIE_PASSWORD
+# (32+ characters) turn accounts on (RLM-414, keys from RLM-415); ADMIN_TOKEN and ADMIN_EMAIL arrive with the admin ticket.
+# Optional vars: WORKOS_API_BASE (default https://api.workos.com), WORKOS_ISSUER (accepted access-token issuers, comma-separated).
 # For `wrangler dev`, copy .dev.vars.example to .dev.vars.
 
 # One SQLite-backed page object per page: op log, rows, idempotency keys, WebSocket change feed.
