@@ -1,1 +1,6 @@
 IP_HMAC_KEY=dev-only-change-me
+# Accounts (WorkOS AuthKit, staging environment). Leave unset to run without sign-in.
+# Redirect URI to register in WorkOS: http://localhost:8787/auth/callback
+# WORKOS_CLIENT_ID=client_...
+# WORKOS_API_KEY=sk_test_...
+# WORKOS_COOKIE_PASSWORD=<openssl rand -base64 32>

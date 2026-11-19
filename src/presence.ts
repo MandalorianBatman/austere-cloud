@@ -42,9 +42,17 @@ export function colourFor(name: string, taken: ReadonlySet<string> = new Set()):
   return PALETTE[start];
 }
 
-/** A self-declared name: trimmed, at most LIMITS.nameChars characters, `Reviewer` when empty. */
+/** Names nobody but the owner goes by on a hosted page (the local server reserves the same ones). */
+const RESERVED = new Set(["owner", "you", "agent", "me", "render check"]);
+
+export function reservedName(name: string): boolean {
+  return RESERVED.has(name.trim().toLowerCase());
+}
+
+/** A self-declared name: trimmed, at most LIMITS.nameChars characters, `Reviewer` when empty or reserved. */
 export function declaredName(name: string | undefined): string {
-  return [...(name ?? "").trim()].slice(0, LIMITS.nameChars).join("") || "Reviewer";
+  const n = [...(name ?? "").trim()].slice(0, LIMITS.nameChars).join("");
+  return n && !reservedName(n) ? n : "Reviewer";
 }
 
 /**

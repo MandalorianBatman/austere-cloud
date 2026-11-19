@@ -148,7 +148,7 @@ export class Client {
   }
 }
 
-type SocketInit = { protocols?: string[]; origin?: string | null; ip?: string; env?: Env; clientId?: string; cookie?: string };
+type SocketInit = { protocols?: string[]; origin?: string | null; ip?: string; env?: Env; clientId?: string; cookie?: string; bearer?: string };
 
 /** Opens a socket at `path`; resolves to a Client on 101, or to the refusal Response. */
 export async function open(path: string, init: SocketInit = {}): Promise<Client | Response> {
@@ -156,7 +156,7 @@ export async function open(path: string, init: SocketInit = {}): Promise<Client 
   if (init.protocols) headers["sec-websocket-protocol"] = init.protocols.join(", ");
   if (init.origin !== null) headers.origin = init.origin ?? ORIGIN;
   if (init.cookie !== undefined) headers.cookie = init.cookie;
-  const res = await call(path, { headers, ip: init.ip, env: init.env });
+  const res = await call(path, { headers, ip: init.ip, env: init.env, token: init.bearer });
   if (res.status !== 101 || !res.webSocket) return res;
   if (res.headers.get("sec-websocket-protocol") !== "austere-sync.1") throw new Error(`answered protocol ${res.headers.get("sec-websocket-protocol")}`);
   return new Client(res.webSocket, init.clientId);
@@ -168,8 +168,10 @@ async function client(path: string, init: SocketInit): Promise<Client> {
   return c;
 }
 
+/** An owner socket: an owner token rides in the subprotocols, an access token (a JWT) in Authorization, as the CLI sends them. */
 export function ownerSocket(token: string, id: string, init: SocketInit & { cli?: string } = {}): Promise<Client> {
-  return client(`/api/pages/${id}/sync?cli=${init.cli ?? CLI}`, { protocols: syncProtocols({ owner: token }), ...init });
+  const auth = token.includes(".") ? { protocols: syncProtocols({}), bearer: token } : { protocols: syncProtocols({ owner: token }) };
+  return client(`/api/pages/${id}/sync?cli=${init.cli ?? CLI}`, { ...auth, ...init });
 }
 
 export function reviewerSocket(id: string, init: SocketInit & { invite?: string } = {}): Promise<Client> {

@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { handleApi } from "./api";
 import { handleServe } from "./serve";
+import { handleWeb } from "./web";
 import { serveRuntime } from "./runtime";
 import { HttpError, json } from "./util";
 import { assetToken, reviewerSync } from "./sync";
@@ -26,7 +27,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     return serveRuntime(request, env, ctx, rt[1], rt[2]);
   }
 
-  return (await handleServe(request, env, path)) ?? new Response("not found", { status: 404 });
+  return (await handleWeb(request, env, path)) ?? (await handleServe(request, env, path)) ?? new Response("not found", { status: 404 });
 }
 
 export default {

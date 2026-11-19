@@ -66,3 +66,9 @@ export function json(body: unknown, status = 200, headers: Record<string, string
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
   });
 }
+
+const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+export function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ENTITIES[c]);
+}

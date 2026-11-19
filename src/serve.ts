@@ -3,6 +3,8 @@
 import type { Env } from "./env";
 import { JS_TYPE, objectKey } from "./objects";
 import { OWNER_SESSION_MS } from "./page";
+import { signInUrl } from "./session";
+import { accountsConfigured } from "./workos";
 import { OWNER_COOKIE, PAGE_ID_RE, SHA_RE, sha256B64url } from "./util";
 
 const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" };
@@ -18,6 +20,8 @@ const LOGIN_FAILED = "This sign-in link was used already or has expired. Run `au
 export interface PageRow {
   id: string;
   owner_id: string;
+  /** The account that holds the page's owner; null while the owner is an unclaimed anonymous token. */
+  owner_user_id: string | null;
   title: string;
   cli_version: string;
   /** SHA-256 of the page HTML object; null until the first publish. */
@@ -32,7 +36,7 @@ export interface PageRow {
 export async function livePage(env: Env, id: string): Promise<PageRow | "gone" | null> {
   if (!PAGE_ID_RE.test(id)) return null;
   const row = await env.DB.prepare(
-    `SELECT p.id, p.owner_id, p.title, p.cli_version, p.html, p.published_at, p.expires_at,
+    `SELECT p.id, p.owner_id, o.user_id AS owner_user_id, p.title, p.cli_version, p.html, p.published_at, p.expires_at,
             (p.taken_down OR o.blocked OR EXISTS (SELECT 1 FROM blocked_ids b WHERE b.page_id = p.id)) AS gone
      FROM pages p JOIN owners o ON o.id = p.owner_id WHERE p.id = ?`,
   )
@@ -73,7 +77,8 @@ async function shell(env: Env, id: string): Promise<Response> {
     artifactUrl: `${base}/a/`,
     version: page.cli_version,
     viewer: { role: "reviewer", name: "" },
-    hosted: { base, report: `${base}/report`, publishedAt: page.published_at },
+    // `signIn`: where the chrome sends a viewer without access (accounts on); a top-level navigation, so the CSP needs nothing for it.
+    hosted: { base, report: `${base}/report`, publishedAt: page.published_at, ...(accountsConfigured(env) ? { signIn: signInUrl(base) } : {}) },
   };
   const bootScript = `window.__AUSTERE__=${JSON.stringify(boot).replace(/</g, "\\u003c")}`;
   // `script-src 'self'` blocks inline scripts, so the boot script is allowed by hash.
