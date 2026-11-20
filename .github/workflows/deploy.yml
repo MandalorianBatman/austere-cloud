@@ -1,0 +1,75 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; never cancel one that is already uploading.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # D1 and R2 are created on the first run and found by name on every later one, so the
+      # committed wrangler.toml keeps its placeholder id (local dev and tests use emulation).
+      - name: Create D1 and R2 if missing, put the D1 id into wrangler.toml
+        run: |
+          set -euo pipefail
+          d1_id() { npx wrangler d1 list --json | jq -r '.[] | select(.name == "austere-cloud") | .uuid'; }
+          id=$(d1_id)
+          if [ -z "$id" ]; then
+            npx wrangler d1 create austere-cloud
+            id=$(d1_id)
+          fi
+          test -n "$id"
+          sed -i "s/^database_id = .*/database_id = \"$id\"/" wrangler.toml
+          grep -q "^database_id = \"$id\"" wrangler.toml
+          npx wrangler r2 bucket info austere-cloud-pages >/dev/null 2>&1 || npx wrangler r2 bucket create austere-cloud-pages
+
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply austere-cloud --remote
+
+      # --secrets-file is additive: a secret left out keeps its deployed value. The WORKOS_* trio turns
+      # accounts on (RLM-414); upload it only when all three repo secrets are set, so a half-set trio fails loudly.
+      - name: Deploy the Worker with its secrets
+        env:
+          IP_HMAC_KEY: ${{ secrets.IP_HMAC_KEY }}
+          WORKOS_CLIENT_ID: ${{ secrets.WORKOS_CLIENT_ID }}
+          WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
+          WORKOS_COOKIE_PASSWORD: ${{ secrets.WORKOS_COOKIE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$IP_HMAC_KEY"
+          set_count=0
+          for k in "$WORKOS_CLIENT_ID" "$WORKOS_API_KEY" "$WORKOS_COOKIE_PASSWORD"; do [ -n "$k" ] && set_count=$((set_count + 1)); done
+          case "$set_count" in
+            0) jq -n --arg k "$IP_HMAC_KEY" '{IP_HMAC_KEY: $k}' ;;
+            3)
+              test "${#WORKOS_COOKIE_PASSWORD}" -ge 32
+              jq -n --arg k "$IP_HMAC_KEY" --arg c "$WORKOS_CLIENT_ID" --arg a "$WORKOS_API_KEY" --arg p "$WORKOS_COOKIE_PASSWORD" \
+                '{IP_HMAC_KEY: $k, WORKOS_CLIENT_ID: $c, WORKOS_API_KEY: $a, WORKOS_COOKIE_PASSWORD: $p}' ;;
+            *) echo "set all three WORKOS_* repo secrets or none" >&2; exit 1 ;;
+          esac > "$RUNNER_TEMP/secrets.json"
+          npx wrangler deploy --secrets-file "$RUNNER_TEMP/secrets.json"
+          rm -f "$RUNNER_TEMP/secrets.json"

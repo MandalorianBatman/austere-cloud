@@ -19,9 +19,19 @@ npm run dev         # http://localhost:8787
 npm run smoke       # in another shell: publish, two invites, notes, replies, idempotency, live revoke, delete
 ```
 
-Accounts are off until the WorkOS secrets are set (`WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`; in `.dev.vars` for `wrangler dev`, as Worker secrets in production; RLM-415). Tests run against a WorkOS stub with a test-only key (`test/workos.ts`), never real keys.
+Accounts are off until the WorkOS secrets are set (`WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`; in `.dev.vars` for `wrangler dev`, as repo secrets for the deploy workflow in production; RLM-415). Tests run against a WorkOS stub with a test-only key (`test/workos.ts`), never real keys.
 
-`austere-axi/sync` is not on npm yet. Until the release that ships it (RLM-271), `package.json` installs it from `vendor/austere-axi-8f1d55b.tgz`, an `npm pack` of austere-axi `main` at `8f1d55b` (the merge of austere-axi#56, RLM-314). To refresh it, run `npm ci && npm run build && npm pack` in an austere-axi checkout and install the tarball here; once the release is out, depend on it from npm and delete `vendor/`.
+`austere-axi/sync` comes from the `austere-axi` npm package (0.10.0 or later).
+
+## Deploy
+
+Live at https://austere.blundertech.com. A push to `main` runs `.github/workflows/deploy.yml`: typecheck, tests, then it creates the D1 database `austere-cloud` and the R2 bucket `austere-cloud-pages` if they are missing, applies `migrations/` remotely, and runs `wrangler deploy` with the Worker secrets below. The route is a Workers custom domain (`wrangler.toml`), so Cloudflare creates the DNS record.
+
+Repo secrets the workflow needs: `CLOUDFLARE_API_TOKEN` (Workers Scripts, D1, R2 and Workers Routes edit, plus DNS edit, for the `blundertech.com` zone), `CLOUDFLARE_ACCOUNT_ID`, `IP_HMAC_KEY` (`openssl rand -base64 32`). Rotating `IP_HMAC_KEY` only resets the rate-limit counters. Optional, all three together to turn accounts on: `WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD` (`openssl rand -base64 32`; rotating it signs every browser out). The workflow uploads the ones that are set.
+
+The very first deploy of a new Worker can fail with `This Worker does not exist on your account [code: 10007]` after the upload; re-run the job.
+
+Until the CLI release whose default URL is this host, point the CLI at it: `AUSTERE_AXI_CLOUD_URL=https://austere.blundertech.com austere-axi publish page.html`. Check the live service with `node scripts/smoke.mjs https://austere.blundertech.com`.
 
 ## Publish by hand
 

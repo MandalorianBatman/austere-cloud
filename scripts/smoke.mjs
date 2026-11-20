@@ -3,6 +3,7 @@
 //   node scripts/smoke.mjs [base URL, default http://localhost:8787]
 // Needs Node 22+ (global WebSocket). Exits non-zero on the first failed check.
 import { request } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { createHash, randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { mutation, parseServerFrame, syncProtocols } from "austere-axi/sync";
@@ -28,7 +29,7 @@ async function http(method, path, { token, body, headers = {} } = {}) {
 /** A raw upgrade request, to see the status of a refused handshake. */
 function handshake(path, protocols) {
   return new Promise((resolve, reject) => {
-    const req = request(BASE + path, {
+    const req = (BASE.startsWith("https:") ? httpsRequest : request)(BASE + path, {
       headers: {
         connection: "Upgrade",
         upgrade: "websocket",
