@@ -3,7 +3,7 @@
 //   /auth/callback                → code exchange, `austere_session` cookie, back to return_to
 //   /auth/logout                  → cookie cleared, AuthKit session ended
 //   /auth/config                  → { clientId, apiBase } for the CLI's device flow
-//   /                             → my pages and their grants, pages shared with me
+//   /                             → signed out: the landing page; signed in: my pages and their grants, pages shared with me
 //   POST /dash/pages/:id/grants[/remove]  → the dashboard's grant forms
 import type { Env } from "./env";
 import { accountOwner, addGrant, ensureUser, listGrants, normalEmail, removeGrant, upsertUser, type User } from "./accounts";
@@ -26,6 +26,7 @@ import {
   type SessionData,
 } from "./session";
 import { WorkosRefused, accountsConfigured, authorizeUrl, exchangeCode, logoutUrl, requireAccounts } from "./workos";
+import { landing } from "./landing";
 import { HttpError, escapeHtml, json, randomId } from "./util";
 
 const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" };
@@ -136,10 +137,8 @@ async function sharedPages(env: Env, user: User): Promise<{ id: string; title: s
 }
 
 async function dashboard(env: Env, session: Session): Promise<Response> {
-  if (!accountsConfigured(env)) return page(env, "austere", `<h1>austere</h1><p class="muted">Sign-in is not configured on this service.</p>`);
-  if (!session.userId) {
-    return page(env, "Sign in", `<h1>austere</h1><p>Sign in to see your published pages and the pages shared with you.</p><p><a href="${signInUrl("/")}">Sign in</a></p>`);
-  }
+  if (!accountsConfigured(env)) return landing(null);
+  if (!session.userId) return landing(signInUrl("/"));
   const user = await ensureUser(env, session.userId);
   const owner = { id: await accountOwner(env, user.id), user };
   const mine = await ownedPages(env, owner);
