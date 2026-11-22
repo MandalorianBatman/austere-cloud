@@ -2,6 +2,7 @@
 // Static HTML and CSS only: the CSP allows no script, no fetch and no external asset.
 
 const REPO = "https://github.com/MandalorianBatman/austere-axi";
+const INSTALL_GUIDE = `${REPO}/blob/main/docs/install.md`;
 
 const CSS = `
 :root{--bg:#09090b;--ink:#ecebe6;--muted:#8b8a85;--line:#ffffff14;--line2:#ffffff24;--card:#ffffff06;
@@ -43,6 +44,9 @@ h1 em,h2 em{font-style:italic;background:linear-gradient(100deg,var(--a),var(--b
 .ctas{display:flex;gap:12px;flex-wrap:wrap}
 .trust{margin-top:36px;display:flex;gap:18px;flex-wrap:wrap;font:12px var(--mono);color:var(--muted)}
 .trust span:before{content:"✓ ";color:var(--a)}
+.quick{margin-top:28px;display:inline-flex;align-items:center;gap:10px;max-width:100%;flex-wrap:wrap;font:13px var(--mono);border:1px solid var(--line2);border-radius:12px;padding:10px 14px;background:#00000050}
+.quick a{color:var(--muted);font-family:var(--sans)}
+.quick a:hover{color:var(--ink)}
 
 .stage{position:relative;height:520px}
 .win{position:absolute;border:1px solid var(--line2);border-radius:14px;background:linear-gradient(180deg,#17171bf2,#0f0f12f2);box-shadow:0 40px 80px -30px #000,0 0 0 1px #00000080,inset 0 1px 0 #ffffff12;overflow:hidden}
@@ -106,7 +110,17 @@ h2{font-family:var(--serif);font-weight:400;font-size:clamp(34px,4.4vw,54px);lin
 .step:before{content:"0" counter(s);font:500 12px var(--mono);color:var(--muted)}
 .step h3{font:500 24px var(--serif);margin:10px 0 8px}
 .step p{color:#a3a29c;margin:0 0 18px}
-.step pre{margin:0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#00000050;font-size:12.5px;color:#d6d5cf;white-space:pre-wrap;word-break:break-all}
+.step pre{margin:0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#00000050;font-size:12.5px;color:#d6d5cf;white-space:pre-wrap;overflow-wrap:anywhere}
+.steps.four{grid-template-columns:repeat(4,1fr)}
+.step pre code,.quick code{-webkit-user-select:all;user-select:all;color:var(--ink)}
+.step pre .p,.quick .p{-webkit-user-select:none;user-select:none}
+.alt{margin-top:28px;border:1px solid var(--line);border-radius:18px;padding:22px 24px;background:#ffffff05;display:grid;grid-template-columns:1fr 1.4fr;gap:24px;align-items:center}
+.alt p{margin:0;color:#a3a29c}
+.alt p b{color:var(--ink);font-weight:600}
+.alt a{color:var(--ink);text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}
+.alt pre{margin:0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#00000050;font-size:12.5px;color:#d6d5cf;white-space:pre-wrap;overflow-wrap:anywhere}
+.alt pre code{-webkit-user-select:all;user-select:all;color:var(--ink)}
+.alt pre .p{-webkit-user-select:none;user-select:none}
 
 .sec{display:grid;grid-template-columns:1fr 1.15fr;gap:56px;align-items:start}
 .list{display:grid;gap:2px;border:1px solid var(--line);border-radius:18px;overflow:hidden}
@@ -137,7 +151,7 @@ footer .wrap{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
 footer .r{margin-left:auto;display:flex;gap:20px}
 footer a:hover{color:var(--ink)}
 
-@media (max-width:960px){.hero,.sec{grid-template-columns:1fr}.stage{height:500px}.bento{grid-template-columns:1fr 1fr}.card,.card.wide{grid-column:span 1}.steps{grid-template-columns:1fr}nav .links{display:none}nav .btn{margin-left:auto}}
+@media (max-width:960px){.hero,.sec,.alt{grid-template-columns:1fr}.stage{height:500px}.bento{grid-template-columns:1fr 1fr}.card,.card.wide{grid-column:span 1}.steps,.steps.four{grid-template-columns:1fr}nav .links{display:none}nav .btn{margin-left:auto}}
 @media (max-width:620px){.bento{grid-template-columns:1fr}.stage{height:auto;display:grid;gap:16px}.win{position:relative;width:100%}.term pre{font-size:12px}.doc{grid-template-columns:1fr}.hero{padding-top:56px}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}html{scroll-behavior:auto}}
 `;
@@ -170,7 +184,7 @@ const ARCH = `<svg viewBox="0 0 1040 300" role="img" aria-label="CLI and reviewe
 function html(signIn: string | null): string {
   const enter = signIn
     ? `<a class="btn primary" href="${signIn}">Sign in <span class="arrow">→</span></a>`
-    : `<a class="btn primary" href="#how">Get started <span class="arrow">→</span></a>`;
+    : `<a class="btn primary" href="#install">Get started <span class="arrow">→</span></a>`;
   const navEnter = signIn ? `<a class="btn primary sm" href="${signIn}">Sign in</a>` : `<a class="btn ghost sm" href="${REPO}">GitHub</a>`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -181,7 +195,7 @@ function html(signIn: string | null): string {
 <div class="bgfx"></div>
 <nav><div class="wrap">
   <a class="logo" href="/">austere <i>cloud</i></a>
-  <div class="links"><a href="#features">Features</a><a href="#how">How it works</a><a href="#security">Security</a><a href="${REPO}">GitHub</a></div>
+  <div class="links"><a href="#install">Install</a><a href="#features">Features</a><a href="#how">How it works</a><a href="#security">Security</a><a href="${REPO}">GitHub</a></div>
   ${navEnter}
 </div></nav>
 
@@ -191,7 +205,8 @@ function html(signIn: string | null): string {
     <span class="eyebrow"><span class="dot"></span>Hosted share links for austere-axi</span>
     <h1>Share the page.<br><em>Keep the room.</em></h1>
     <p class="lede">One command turns a local review page into a private link per reviewer. Notes, replies and who's looking arrive live; every invite has a name and can be revoked mid-sentence.</p>
-    <div class="ctas">${enter}<a class="btn ghost" href="${REPO}">Read the docs</a></div>
+    <div class="ctas">${enter}<a class="btn ghost" href="${INSTALL_GUIDE}">Read the docs</a></div>
+    <div class="quick"><span class="p">$</span><code>npm install -g austere-axi</code><a href="#install">Node.js 22.18+ · full setup ↓</a></div>
     <div class="trust"><span>Invite-only by default</span><span>Revocable in real time</span><span>Open source, MIT</span></div>
   </div>
   <div class="stage" aria-hidden="true">
@@ -230,6 +245,22 @@ function html(signIn: string | null): string {
 <div class="strip"><div class="wrap"><span>Runs on</span><b>Cloudflare Workers</b><b>Durable Objects</b><b>R2</b><b>D1</b><b>WorkOS AuthKit</b></div></div>
 
 <main class="wrap">
+<section id="install">
+  <div class="kicker">Install</div>
+  <h2>Set up once, <em>from your terminal</em>.</h2>
+  <p class="sub">You need an AI coding agent, such as Claude Code, Codex or Cursor, and <a class="u" href="https://nodejs.org">Node.js</a> 22.18 or later.</p>
+  <div class="steps">
+    <div class="step"><h3>Install the CLI</h3><p>Run it once in a terminal.</p><pre><span class="p">$ </span><code>npm install -g austere-axi</code></pre></div>
+    <div class="step"><h3>Add the skills</h3><p>Give your agent the austere skills.</p><pre><span class="p">$ </span><code>npx skills add MandalorianBatman/austere-axi --skill austere --skill austere-setup</code></pre></div>
+    <div class="step"><h3>Ask your agent</h3><p>It checks the install and opens a test page so you can see it work.</p><pre><span class="p">› </span><code>set up austere-axi</code></pre></div>
+  </div>
+  <div class="alt">
+    <p><b>Using Claude Code?</b> Install it as a plugin instead. Claude Desktop, Cursor, Codex and manual setup are in the <a href="${INSTALL_GUIDE}">install guide</a>.</p>
+    <pre><span class="p">$ </span><code>claude plugin marketplace add MandalorianBatman/austere-axi</code>
+<span class="p">$ </span><code>claude plugin install austere@austere-axi</code></pre>
+  </div>
+</section>
+
 <section id="features">
   <div class="kicker">Features</div>
   <h2>Everything a review needs. <em>Nothing it doesn't.</em></h2>
@@ -259,8 +290,8 @@ function html(signIn: string | null): string {
     </div>
     <div class="card" style="--glow:var(--a)">
       <div class="ico">${ICONS.users}</div>
-      <h3>Accounts, when you want them</h3>
-      <p>Sign in once with <code>austere-axi cloud login</code>. Grant pages by email from the dashboard; collaborators sign in with an email code, Google, GitHub or a passkey.</p>
+      <h3>One account, every page</h3>
+      <p>Sign in once with <code>austere-axi cloud login</code> and you own every page you publish. Grant pages by email from the dashboard; collaborators sign in with an email code, Google, GitHub or a passkey.</p>
     </div>
     <div class="card wide" style="--glow:var(--b)">
       <div class="ico">${ICONS.shield}</div>
@@ -278,8 +309,10 @@ function html(signIn: string | null): string {
 
 <section id="how">
   <div class="kicker">How it works</div>
-  <h2>From a local file to a <em>live review</em> in three steps.</h2>
-  <div class="steps">
+  <h2>From a local file to a <em>live review</em> in four steps.</h2>
+  <div class="steps four">
+    <div class="step"><h3>Connect</h3><p>Cloud features are off by default. Turn them on, then sign in once: publishing needs an account.</p><pre><span class="p">$ </span><code>austere-axi cloud on</code>
+<span class="p">$ </span><code>austere-axi cloud login</code></pre></div>
     <div class="step"><h3>Publish</h3><p>Point the CLI at the page you already review locally.</p><pre><span class="p">$</span> austere-axi publish plan.html \\
     --invite Ana --invite Ben</pre></div>
     <div class="step"><h3>Share</h3><p>Send each reviewer their own link, or grant their email from the dashboard.</p><pre>Ana  /p/k3v9qz#i=…
