@@ -145,24 +145,25 @@ describe("roles and credentials", () => {
     expect(f.rows.map((r) => r.type)).toEqual(["page"]);
   });
 
-  it("refuses the owner socket without a valid owner token, or for another owner's page", async () => {
+  it("refuses the owner socket without a valid access token, an old owner token in the subprotocols included, or for another owner's page", async () => {
     const token = await newOwner();
     const id = await createPage(token);
     const path = `/api/pages/${id}/sync?cli=${CLI}`;
-    for (const protocols of [["austere-sync.1"], syncProtocols({ owner: "x".repeat(43) }), syncProtocols({ invite: token })]) {
+    for (const protocols of [["austere-sync.1"], syncProtocols({ owner: "x".repeat(43) }), syncProtocols({ invite: "x".repeat(43) })]) {
       const res = (await open(path, { protocols })) as Response;
       expect(res.status, protocols.join()).toBe(403);
-      expect(await res.json()).toEqual({ error: { code: "forbidden", message: expect.any(String) } });
+      expect(await res.json()).toEqual({ error: { code: "forbidden", message: expect.stringContaining("austere-axi cloud login") } });
     }
-    const other = await newOwner("198.51.100.20");
-    expect(((await open(path, { protocols: syncProtocols({ owner: other }) })) as Response).status).toBe(404);
+    expect(((await open(path, { protocols: ["austere-sync.1"], bearer: "x".repeat(43) })) as Response).status).toBe(403);
+    const other = await newOwner();
+    expect(((await open(path, { protocols: syncProtocols({}), bearer: other })) as Response).status).toBe(404);
   });
 
   it("answers austere-sync.1 and never echoes the credential", async () => {
     const token = await newOwner();
     const id = await createPage(token);
     const res = await call(`/api/pages/${id}/sync?cli=${CLI}`, {
-      headers: { upgrade: "websocket", "sec-websocket-protocol": syncProtocols({ owner: token }).join(", ") },
+      headers: { upgrade: "websocket", "sec-websocket-protocol": syncProtocols({}).join(", "), authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(101);
     expect(res.headers.get("sec-websocket-protocol")).toBe("austere-sync.1");
@@ -173,11 +174,11 @@ describe("roles and credentials", () => {
   it("426s without the subprotocol, without an upgrade, or for a CLI below MIN_CLI_VERSION", async () => {
     const token = await newOwner();
     const id = await createPage(token);
-    const owner = syncProtocols({ owner: token });
+    const owner = { protocols: syncProtocols({}), bearer: token };
     const cases: [string, Parameters<typeof open>[1]][] = [
-      [`/api/pages/${id}/sync?cli=${CLI}`, { protocols: [`austere-owner.${token}`] }],
-      [`/api/pages/${id}/sync?cli=0.8.1`, { protocols: owner }],
-      [`/api/pages/${id}/sync`, { protocols: owner }],
+      [`/api/pages/${id}/sync?cli=${CLI}`, { protocols: [], bearer: token }],
+      [`/api/pages/${id}/sync?cli=0.8.1`, owner],
+      [`/api/pages/${id}/sync`, owner],
     ];
     for (const [path, init] of cases) {
       const res = (await open(path, init)) as Response;
@@ -330,7 +331,7 @@ describe("mutations", () => {
       expect((await c.closedWith()).code).toBe(1000);
     }
     expect(((await open(`/p/${id}/sync`, { protocols: ["austere-sync.1"] })) as Response).status).toBe(404);
-    expect(((await open(`/api/pages/${id}/sync?cli=${CLI}`, { protocols: syncProtocols({ owner: token }) })) as Response).status).toBe(404);
+    expect(((await open(`/api/pages/${id}/sync?cli=${CLI}`, { protocols: syncProtocols({}), bearer: token })) as Response).status).toBe(404);
     expect((await call(`/p/${id}`)).status).toBe(404);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM page_objects").first("n")).toBe(0);
     expect((await env.PAGES.list({ prefix: "objects/" })).objects).toEqual([]);
@@ -340,6 +341,6 @@ describe("mutations", () => {
     const { token, id } = await published();
     await env.DB.prepare("UPDATE pages SET taken_down = 1 WHERE id = ?").bind(id).run();
     expect(((await open(`/p/${id}/sync`, { protocols: ["austere-sync.1"] })) as Response).status).toBe(410);
-    expect(((await open(`/api/pages/${id}/sync?cli=${CLI}`, { protocols: syncProtocols({ owner: token }) })) as Response).status).toBe(410);
+    expect(((await open(`/api/pages/${id}/sync?cli=${CLI}`, { protocols: syncProtocols({}), bearer: token })) as Response).status).toBe(410);
   });
 });

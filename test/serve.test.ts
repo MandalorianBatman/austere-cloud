@@ -70,7 +70,7 @@ describe("page availability", () => {
     expect((await call(`/p/${body.id}`)).status).toBe(404);
     expect((await call(`/p/${body.id}/a/`)).status).toBe(404);
     // The owner can't reach an expired page's object either.
-    const expired = await open(`/api/pages/${body.id}/sync?cli=${CLI}`, { protocols: syncProtocols({ owner: token }) });
+    const expired = await open(`/api/pages/${body.id}/sync?cli=${CLI}`, { protocols: syncProtocols({}), bearer: token });
     expect((expired as Response).status).toBe(404);
 
     await env.DB.prepare("UPDATE pages SET expires_at = ?, taken_down = 1").bind(Date.now() + 1e9).run();

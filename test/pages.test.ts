@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { PRE_ACCOUNT } from "../src/auth";
 import { CLI, PAGE_HTML, artifact, call, createPage, gzip, invite, newOwner, ownerSocket, publish, publishArgs, putObject, sha256Hex } from "./helpers";
 
 const row = (id: string) => env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first<Record<string, number | string | null>>();
@@ -112,28 +113,34 @@ describe("objects", () => {
 });
 
 describe("auth", () => {
-  it("rejects missing and wrong tokens", async () => {
+  it("rejects missing and wrong tokens; an anonymous owner token from before 0.17 is told to upgrade", async () => {
     expect((await call("/api/pages", { method: "POST" })).status).toBe(401);
     expect((await call("/api/pages", { method: "POST", token: "nope" })).status).toBe(401);
     expect((await call("/api/pages", { token: "nope" })).status).toBe(401);
+    const legacy = await call("/api/pages", { method: "POST", token: "t".repeat(43) });
+    expect(legacy.status).toBe(401);
+    expect(await legacy.json()).toEqual({ error: PRE_ACCOUNT });
+  });
+
+  it("no longer issues or claims anonymous owner tokens: 410 with what to do (RLM-434)", async () => {
+    for (const path of ["/api/owners", "/api/owners/claim"]) {
+      const res = await call(path, { method: "POST", token: await newOwner(), json: { token: "t".repeat(43) } });
+      expect(res.status, path).toBe(410);
+      expect(await res.json()).toEqual({ error: PRE_ACCOUNT });
+    }
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM owners").first<{ n: number }>())!.n).toBe(0);
   });
 
   it("hides one owner's pages from another", async () => {
     const alice = await newOwner();
-    const mallory = await newOwner("203.0.113.9");
+    const mallory = await newOwner();
     await publish(alice);
     expect(await (await call("/api/pages", { token: mallory })).json()).toEqual({ pages: [] });
   });
 
-  it("stores only a hash of the token", async () => {
-    const token = await newOwner();
-    const r = await env.DB.prepare("SELECT token_hash FROM owners").first<{ token_hash: string }>();
-    expect(r!.token_hash).toBe(await sha256Hex(token));
-    expect(r!.token_hash).not.toContain(token);
-  });
-
   it("refuses a blocked owner", async () => {
     const token = await newOwner();
+    expect((await call("/api/pages", { token })).status).toBe(200);
     await env.DB.prepare("UPDATE owners SET blocked = 1").run();
     expect((await call("/api/pages", { method: "POST", token })).status).toBe(403);
   });
@@ -267,18 +274,9 @@ describe("size cap", () => {
 });
 
 describe("rate limits", () => {
-  it("limits new owners to 5 per IP per day", async () => {
-    for (let i = 0; i < 5; i++) expect((await call("/api/owners", { method: "POST", ip: "198.51.100.1" })).status).toBe(201);
-    const res = await call("/api/owners", { method: "POST", ip: "198.51.100.1" });
-    expect(res.status).toBe(429);
-    expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
-    // Another IP is unaffected.
-    expect((await call("/api/owners", { method: "POST", ip: "198.51.100.2" })).status).toBe(201);
-  });
-
   it("limits publishes to 100 per IP per day across owners", async () => {
     const tokens = [];
-    for (let i = 0; i < 5; i++) tokens.push(await newOwner(`198.51.100.${10 + i}`));
+    for (let i = 0; i < 5; i++) tokens.push(await newOwner());
     const sockets = [];
     for (const token of tokens) {
       const id = await createPage(token);
@@ -290,15 +288,18 @@ describe("rate limits", () => {
   });
 
   it("starts a new window once the old one has elapsed", async () => {
-    for (let i = 0; i < 5; i++) await call("/api/owners", { method: "POST", ip: "198.51.100.3" });
-    expect((await call("/api/owners", { method: "POST", ip: "198.51.100.3" })).status).toBe(429);
+    const token = await newOwner();
+    const owner = await ownerSocket(token, await createPage(token));
+    const { sha } = await putObject(token, PAGE_HTML);
+    for (let i = 0; i < 20; i++) expect((await owner.mutate("publish", publishArgs(sha))).error, String(i)).toBeUndefined();
+    expect((await owner.mutate("publish", publishArgs(sha))).error).toMatchObject({ code: "rate_limited" });
     await env.DB.prepare("UPDATE limits SET window_start = window_start - 86400001").run();
-    expect((await call("/api/owners", { method: "POST", ip: "198.51.100.3" })).status).toBe(201);
+    expect((await owner.mutate("publish", publishArgs(sha))).error).toBeUndefined();
   });
 
   it("keys limits on an HMAC of the IP, not the address", async () => {
-    await call("/api/owners", { method: "POST", ip: "198.51.100.4" });
-    const rows = await env.DB.prepare("SELECT key FROM limits").all<{ key: string }>();
+    await publish(await newOwner(), { ip: "198.51.100.4" });
+    const rows = await env.DB.prepare("SELECT key FROM limits WHERE key LIKE 'pub:ip:%'").all<{ key: string }>();
     expect(rows.results.length).toBe(1);
     expect(rows.results[0].key).not.toContain("198.51.100.4");
   });

@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { HttpError, hmacHex } from "./util";
+import { hmacHex } from "./util";
 
 export const DAY = 24 * 60 * 60 * 1000;
 export const HOUR = 60 * 60 * 1000;
@@ -10,7 +10,6 @@ export const RETENTION_MS = 30 * DAY;
 export const UNPUBLISHED_MS = DAY;
 
 export const RATE_LIMITS = {
-  newOwnersPerIp: { max: 5, window: DAY },
   publishesPerOwner: { max: 20, window: DAY },
   publishesPerIp: { max: 100, window: DAY },
   /** Per invite on an invited socket, per IP on the open link. */
@@ -43,10 +42,4 @@ export async function take(env: Env, key: string, { max, window }: Limit): Promi
     .first<{ count: number; window_start: number }>();
   if (!row || row.count <= max) return null;
   return Math.max(1, Math.ceil((row.window_start + window - now) / 1000));
-}
-
-/** `take` for HTTP handlers: throws 429 with Retry-After once `max` is exceeded. */
-export async function hit(env: Env, key: string, limit: Limit): Promise<void> {
-  const retry = await take(env, key, limit);
-  if (retry !== null) throw new HttpError(429, "rate limit exceeded; try again later", { "retry-after": String(retry) });
 }

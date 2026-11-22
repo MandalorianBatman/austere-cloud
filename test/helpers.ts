@@ -4,6 +4,7 @@ import { mutation, parseServerFrame, syncProtocols } from "austere-axi/sync";
 import type { AckFrame, ErrorCode, MutationArgs, MutationName, PublishArgs, ReceivedChanges, ReceivedFrame } from "austere-axi/sync";
 import worker from "../src/index";
 import { randomId, sha256B64url, sha256Hex } from "../src/util";
+import { accessToken, addUser } from "./workos";
 
 /** The version floor: the one value in wrangler.toml, so tests follow it when RLM-271 changes it. */
 export const CLI = env.MIN_CLI_VERSION;
@@ -26,10 +27,11 @@ export async function call(path: string, init: CallInit = {}): Promise<Response>
   return res;
 }
 
-export async function newOwner(ip?: string): Promise<string> {
-  const res = await call("/api/owners", { method: "POST", ip });
-  if (res.status !== 201) throw new Error(`owner create failed: ${res.status}`);
-  return ((await res.json()) as { token: string }).token;
+/** A fresh account and its access token: the only owner credential (RLM-434). The WorkOS stub knows the user. */
+export async function newOwner(): Promise<string> {
+  const id = `user_${randomId(8)}`;
+  addUser(id, `${id.toLowerCase()}@example.test`);
+  return accessToken(id);
 }
 
 export const PAGE_HTML = `<!doctype html>
@@ -168,10 +170,9 @@ async function client(path: string, init: SocketInit): Promise<Client> {
   return c;
 }
 
-/** An owner socket: an owner token rides in the subprotocols, an access token (a JWT) in Authorization, as the CLI sends them. */
+/** An owner socket: the access token in Authorization, as the CLI sends it. */
 export function ownerSocket(token: string, id: string, init: SocketInit & { cli?: string } = {}): Promise<Client> {
-  const auth = token.includes(".") ? { protocols: syncProtocols({}), bearer: token } : { protocols: syncProtocols({ owner: token }) };
-  return client(`/api/pages/${id}/sync?cli=${init.cli ?? CLI}`, { ...auth, ...init });
+  return client(`/api/pages/${id}/sync?cli=${init.cli ?? CLI}`, { protocols: syncProtocols({}), bearer: token, ...init });
 }
 
 export function reviewerSocket(id: string, init: SocketInit & { invite?: string } = {}): Promise<Client> {
