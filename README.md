@@ -35,24 +35,24 @@ Until the CLI release whose default URL is this host, point the CLI at it: `AUST
 
 ## Publish by hand
 
-The CLI's `publish` does this for you: create the page, upload its HTML (and packs) as objects named by SHA-256, then send a `publish` mutation on the owner socket.
+The CLI's `publish` does this for you: create the page, upload its HTML (and packs) as objects named by SHA-256, then send a `publish` mutation on the owner socket. Every owner is an account: sign in with `austere-axi cloud login` (with accounts on, see Deploy) and use the access token it stores in `cloud.json` (`account.accessToken`, valid for 5 minutes; `austere-axi cloud whoami` refreshes it).
 
 ```sh
-TOKEN=$(curl -s -X POST localhost:8787/api/owners | jq -r .token)
+TOKEN=$(jq -r .account.accessToken ~/.austere-axi/cloud.json)
 ID=$(curl -s -X POST localhost:8787/api/pages -H "authorization: Bearer $TOKEN" | jq -r .id)
 SHA=$(sha256sum page.html | cut -d' ' -f1)
 gzip -c page.html | curl -s -X PUT localhost:8787/api/objects/$SHA -H "authorization: Bearer $TOKEN" \
   -H 'content-type: text/html' -H 'content-encoding: gzip' --data-binary @-
 ```
 
-Then open `ws://localhost:8787/api/pages/$ID/sync?cli=0.9.0` with the subprotocols `austere-sync.1, austere-owner.$TOKEN` and send
+Then open `ws://localhost:8787/api/pages/$ID/sync?cli=0.9.0` with the subprotocol `austere-sync.1` and the header `Authorization: Bearer $TOKEN`, and send
 
 ```json
 { "v": 1, "t": "mutation", "clientId": "<16+ base64url chars>", "n": 1, "name": "publish",
   "args": { "title": "Plan", "cliVersion": "0.9.0", "html": "<sha>", "packs": [], "auto": false, "unlisted": false, "presence": true } }
 ```
 
-`scripts/smoke.mjs` does all of this with `austere-axi/sync`. `page.html` must load the runtime from `/rt/<cliVersion>/austere.js`, which the Worker proxies from jsDelivr.
+`AUSTERE_ACCESS_TOKEN=$TOKEN node scripts/smoke.mjs` does all of this with `austere-axi/sync`. `page.html` must load the runtime from `/rt/<cliVersion>/austere.js`, which the Worker proxies from jsDelivr.
 
 ## License
 

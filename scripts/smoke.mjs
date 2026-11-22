@@ -1,7 +1,9 @@
 // Smoke test against a running Worker (`npm run dev`): publish a page through the sync
 // contract, then exercise the page object's sockets the way the CLI and the chrome will.
-//   node scripts/smoke.mjs [base URL, default http://localhost:8787]
-// Needs Node 22+ (global WebSocket). Exits non-zero on the first failed check.
+//   AUSTERE_ACCESS_TOKEN=<access token> node scripts/smoke.mjs [base URL, default http://localhost:8787]
+// The owner is an account (RLM-434): after `austere-axi cloud login`, `cloud.json`'s `account.accessToken`
+// (it lives 5 minutes; `austere-axi cloud whoami` refreshes it). Needs Node 22+ (global WebSocket).
+// Exits non-zero on the first failed check.
 import { request } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { createHash, randomBytes } from "node:crypto";
@@ -11,6 +13,11 @@ import { mutation, parseServerFrame, syncProtocols } from "austere-axi/sync";
 const BASE = (process.argv[2] ?? "http://localhost:8787").replace(/\/$/, "");
 const WS = BASE.replace(/^http/, "ws");
 const CLI = process.env.CLI_VERSION ?? "0.9.0";
+const token = process.env.AUSTERE_ACCESS_TOKEN;
+if (!token) {
+  console.error("AUSTERE_ACCESS_TOKEN is not set: run `austere-axi cloud login` and use account.accessToken from cloud.json");
+  process.exit(2);
+}
 
 function check(ok, what, detail) {
   if (!ok) {
@@ -27,7 +34,7 @@ async function http(method, path, { token, body, headers = {} } = {}) {
 }
 
 /** A raw upgrade request, to see the status of a refused handshake. */
-function handshake(path, protocols) {
+function handshake(path, protocols, bearer) {
   return new Promise((resolve, reject) => {
     const req = (BASE.startsWith("https:") ? httpsRequest : request)(BASE + path, {
       headers: {
@@ -36,6 +43,7 @@ function handshake(path, protocols) {
         "sec-websocket-version": "13",
         "sec-websocket-key": randomBytes(16).toString("base64"),
         "sec-websocket-protocol": protocols.join(", "),
+        ...(bearer && { authorization: `Bearer ${bearer}` }),
       },
     });
     req.on("upgrade", (res, socket) => {
@@ -52,9 +60,9 @@ function handshake(path, protocols) {
   });
 }
 
-/** One socket; frames are parsed with austere-axi/sync. */
-async function connect(path, credentials, clientId = randomBytes(16).toString("base64url")) {
-  const ws = new WebSocket(WS + path, syncProtocols(credentials));
+/** One socket; frames are parsed with austere-axi/sync. `bearer`: the owner's access token. */
+async function connect(path, credentials, { bearer, clientId = randomBytes(16).toString("base64url") } = {}) {
+  const ws = new WebSocket(WS + path, { protocols: syncProtocols(credentials), headers: bearer ? { authorization: `Bearer ${bearer}` } : {} });
   const frames = [];
   const waiters = [];
   let closed = null;
@@ -120,9 +128,10 @@ async function connect(path, credentials, clientId = randomBytes(16).toString("b
 }
 
 // ── Owner: account, empty page, object upload ──────────────────────────────
-const { json: owner } = await http("POST", "/api/owners");
-const token = owner.token;
-check(typeof token === "string", "POST /api/owners -> token");
+const noOwners = await http("POST", "/api/owners");
+check(noOwners.status === 410, "POST /api/owners -> 410 (no anonymous owners)", noOwners);
+const anon = await http("GET", "/api/pages", { token: randomBytes(32).toString("base64url") });
+check(anon.status === 401, "an anonymous owner token on /api -> 401", anon);
 const created = await http("POST", "/api/pages", { token });
 check(created.status === 201, `POST /api/pages -> 201 ${created.json.url}`, created);
 const id = created.json.id;
@@ -139,13 +148,15 @@ check(put.status === 204, `PUT /api/objects/${sha.slice(0, 12)}… (gzip) -> 204
 // ── Handshakes ──────────────────────────────────────────────────────────────
 const noToken = await handshake(`/api/pages/${id}/sync?cli=${CLI}`, ["austere-sync.1"]);
 check(noToken.status === 403 && noToken.body.error.code === "forbidden", "owner socket without token -> 403 forbidden", noToken);
-const oldCli = await handshake(`/api/pages/${id}/sync?cli=0.8.1`, syncProtocols({ owner: token }));
+const legacy = await handshake(`/api/pages/${id}/sync?cli=${CLI}`, syncProtocols({ owner: randomBytes(32).toString("base64url") }));
+check(legacy.status === 403, "owner socket with an anonymous owner token -> 403", legacy);
+const oldCli = await handshake(`/api/pages/${id}/sync?cli=0.8.1`, syncProtocols({}), token);
 check(oldCli.status === 426 && oldCli.body.error.code === "upgrade_required", "owner socket with cli=0.8.1 -> 426 upgrade_required", oldCli);
-const good = await handshake(`/api/pages/${id}/sync?cli=${CLI}`, syncProtocols({ owner: token }));
+const good = await handshake(`/api/pages/${id}/sync?cli=${CLI}`, syncProtocols({}), token);
 check(good.status === 101 && good.protocol === "austere-sync.1", "owner handshake -> 101, protocol austere-sync.1 (token not echoed)", good);
 
 // ── Publish over the owner socket ───────────────────────────────────────────
-const o = await connect(`/api/pages/${id}/sync?cli=${CLI}`, { owner: token });
+const o = await connect(`/api/pages/${id}/sync?cli=${CLI}`, {}, { bearer: token });
 const [empty] = await o.pull(0);
 check(empty.rows.length === 0 && empty.cursor === 0, "owner pull(0) on an unpublished page -> no rows, cursor 0", empty);
 const pub = await o.mutate("publish", { title: "Smoke", cliVersion: CLI, html: sha, packs: [], auto: false, unlisted: false, presence: true });

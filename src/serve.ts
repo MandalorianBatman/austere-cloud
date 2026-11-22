@@ -20,7 +20,7 @@ const LOGIN_FAILED = "This sign-in link was used already or has expired. Run `au
 export interface PageRow {
   id: string;
   owner_id: string;
-  /** The account that holds the page's owner; null while the owner is an unclaimed anonymous token. */
+  /** The account that holds the page's owner; null for an anonymous owner from before RLM-434 (blocked by migration 0003). */
   owner_user_id: string | null;
   title: string;
   cli_version: string;

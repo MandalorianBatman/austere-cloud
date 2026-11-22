@@ -53,8 +53,8 @@ export async function ensureUser(env: Env, id: string): Promise<User> {
 }
 
 /**
- * The owner the account publishes new pages as: its oldest owner (one it claimed, or the one made
- * for it), created on first use. 403 when it is blocked.
+ * The owner the account publishes new pages as: its oldest owner, created on first use. 403 when
+ * it is blocked.
  */
 export async function accountOwner(env: Env, userId: string): Promise<string> {
   const pick = () =>
@@ -69,22 +69,6 @@ export async function accountOwner(env: Env, userId: string): Promise<string> {
   }
   if (row.blocked) throw new HttpError(403, "this owner is blocked");
   return row.id;
-}
-
-/**
- * Links anonymous owner `token` to the account, so the account owns its pages. Claiming it again is
- * a no-op; a token another account claimed is 409, an unknown one 404.
- */
-export async function claimOwner(env: Env, userId: string, token: string): Promise<{ pages: number }> {
-  const row = await env.DB.prepare("SELECT id, user_id, blocked FROM owners WHERE token_hash = ?")
-    .bind(await sha256Hex(token))
-    .first<{ id: string; user_id: string | null; blocked: number }>();
-  if (!row) throw new HttpError(404, "unknown owner token");
-  if (row.blocked) throw new HttpError(403, "this owner is blocked");
-  if (row.user_id !== null && row.user_id !== userId) throw new HttpError(409, "this owner token belongs to another account");
-  if (row.user_id === null) await env.DB.prepare("UPDATE owners SET user_id = ? WHERE id = ? AND user_id IS NULL").bind(userId, row.id).run();
-  const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM pages WHERE owner_id = ?").bind(row.id).first<{ n: number }>();
-  return { pages: n?.n ?? 0 };
 }
 
 /** The account's role on a page: owner, collaborator (a grant for its email), or none. */

@@ -45,7 +45,7 @@ describe("anonymous probes of a published, invite-only page", () => {
   it("the owner's page list without a token: 401", async () => {
     const res = await call("/api/pages");
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: "missing bearer token" });
+    expect(await res.json()).toEqual({ error: "missing bearer token: sign in with `austere-axi cloud login`" });
   });
 
   it("the shell is titled `Shared page · austere` and never carries the page title", async () => {

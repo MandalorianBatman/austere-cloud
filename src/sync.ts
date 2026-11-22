@@ -1,11 +1,11 @@
 // WebSocket handshakes: check the credential and the page, then hand the socket to the page
-// object. Credentials ride in Sec-WebSocket-Protocol (austere-axi/sync `readProtocols`); the CLI
-// sends an account's access token as `Authorization: Bearer` instead, since a JWT is no subprotocol.
+// object. Reviewer credentials ride in Sec-WebSocket-Protocol (austere-axi/sync `readProtocols`);
+// the owner's is the account's access token in `Authorization: Bearer`, since a JWT is no subprotocol.
 import { readProtocols } from "austere-axi/sync";
 import type { Credentials, ErrorCode, Role } from "austere-axi/sync";
 import type { Env } from "./env";
 import { displayName, ensureUser, pageRole } from "./accounts";
-import { bearer, ownerByCredential, ownsPage } from "./auth";
+import { bearer, ownerByAccessToken, ownsPage } from "./auth";
 import { ipHash } from "./limits";
 import { versionAllowed } from "./runtime";
 import { livePage, type PageRow } from "./serve";
@@ -73,15 +73,16 @@ function toPage(env: Env, identity: Identity): Promise<Response> {
 /** GET /api/pages/:id/sync?cli=<version>: the owner peer. The page need not be published yet. */
 export function ownerSync(request: Request, env: Env, id: string): Promise<Response> {
   return guarded(async () => {
-    const creds = checkUpgrade(request);
+    checkUpgrade(request);
     const cli = new URL(request.url).searchParams.get("cli") ?? "";
     if (!versionAllowed(env, cli)) throw new HttpError(426, `austere-axi ${cli || "(no ?cli=)"} is too old; ${env.MIN_CLI_VERSION} or later is required`);
-    const credential = bearer(request) ?? creds.owner;
-    const owner = credential === undefined ? null : await ownerByCredential(env, credential).catch((e: unknown) => {
+    // Only an account's access token: an owner token in the subprotocols (CLIs before 0.17) is refused.
+    const credential = bearer(request);
+    const owner = credential === null ? null : await ownerByAccessToken(env, credential).catch((e: unknown) => {
       if (e instanceof HttpError && e.status === 401) return null;
       throw e;
     });
-    if (!owner) throw new HttpError(403, "missing or invalid owner token");
+    if (!owner) throw new HttpError(403, "missing or invalid access token: upgrade austere-axi to 0.17 or later and run `austere-axi cloud login`");
     const page = await livePage(env, id);
     if (page === "gone") throw new HttpError(410, "this page was taken down");
     // Another owner's page is indistinguishable from a missing one.

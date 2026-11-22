@@ -1,16 +1,13 @@
 // Accounts (RLM-414): WorkOS access tokens verified against the JWKS, the CLI's bearer access
-// token, claiming anonymous owner tokens, per-page grants, the browser session cookie and its
+// token, the end of anonymous owners (RLM-434), per-page grants, the browser session cookie and its
 // refresh rotation, /auth/* and the dashboard. WorkOS is the stub in test/workos.ts.
 import { env } from "cloudflare:workers";
 import type { NoteRow, ReceivedFrame } from "austere-axi/sync";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { verifyAccessToken } from "../src/jwt";
 import { SESSION_COOKIE, STATE_COOKIE, unseal, type SessionData } from "../src/session";
-import { ORIGIN, assetToken, call, createPage, newOwner, open, ownerSocket, publish, reviewerSocket } from "./helpers";
-import { API, accessToken, addUser, installWorkos, keys, sessionCookie, stub } from "./workos";
-
-beforeEach(installWorkos);
-afterEach(() => vi.restoreAllMocks());
+import { ORIGIN, assetToken, call, createPage, newOwner, open, ownerSocket, publish, reviewerSocket, sha256Hex } from "./helpers";
+import { API, accessToken, addUser, keys, sessionCookie, stub } from "./workos";
 
 const note = (text: string) => ({ items: [{ kind: "message" as const, text }] });
 type Answer = { token: string; name: string | null; owner: boolean };
@@ -89,8 +86,6 @@ describe("the CLI's access token on /api and the owner socket", () => {
       expect(await res.json()).toEqual({ user: { id: "user_a", email: "ana@example.com", name: "Ana Lima" }, pages: 0 });
     }
     expect(stub.calls.filter((c) => c === "GET /user_management/users/user_a").length).toBe(1);
-    // An anonymous owner token is no account.
-    expect(await (await call("/api/me", { token: await newOwner() })).json()).toEqual({ user: null, pages: 0 });
   });
 
   it("an expired, forged or wrong-audience token is 401 on /api and 403 on the owner socket", async () => {
@@ -133,35 +128,36 @@ describe("the CLI's access token on /api and the owner socket", () => {
   });
 });
 
-describe("claiming an anonymous owner token", () => {
-  it("pages published anonymously belong to the account after the claim; the old token keeps working", async () => {
-    const token = await newOwner();
-    const { id } = await publish(token);
+describe("migration 0003: no anonymous owners (RLM-434)", () => {
+  it("revokes every owner token, claimed ones too, and takes down the pages no account holds", async () => {
     const a = await account("user_a", "ana@example.com");
-    expect((await call(`/api/pages/${id}/html`, { token: a.at })).status).toBe(404);
+    const kept = await accountPage(a.at);
+    const orphan = await accountPage(a.at);
+    // As before 0003: an unclaimed anonymous owner holds `orphan`, and the account claimed another token.
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO owners (id, token_hash, created_at) VALUES ('anon', ?, ?)").bind(await sha256Hex("t".repeat(43)), now),
+      env.DB.prepare("INSERT INTO owners (id, token_hash, created_at, user_id) VALUES ('claimed', ?, ?, 'user_a')").bind(await sha256Hex("c".repeat(43)), now),
+      env.DB.prepare("UPDATE pages SET owner_id = 'anon' WHERE id = ?").bind(orphan),
+      env.DB.prepare("INSERT INTO grants (page_id, email, role, created_at) VALUES (?, 'ben@example.com', 'collaborator', ?)").bind(orphan, now),
+    ]);
+    const hashes = async () => (await env.DB.prepare("SELECT token_hash FROM owners").all<{ token_hash: string }>()).results.map((r) => r.token_hash);
+    const before = await hashes();
 
-    const res = await call("/api/owners/claim", { method: "POST", token: a.at, json: { token } });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pages: 1 });
-    // Claiming again is a no-op.
-    expect((await call("/api/owners/claim", { method: "POST", token: a.at, json: { token } })).status).toBe(200);
+    const migration = env.TEST_MIGRATIONS.find((m) => m.name.startsWith("0003"))!;
+    for (const q of migration.queries) await env.DB.prepare(q).run();
 
+    const after = await hashes();
+    expect(after).toHaveLength(before.length);
+    for (const h of after) expect(before).not.toContain(h);
+    expect(new Set(after).size).toBe(after.length);
+    expect((await call(`/p/${orphan}`)).status).toBe(410);
+    expect((await call(`/p/${kept}`)).status).toBe(200);
     const list = (await (await call("/api/pages", { token: a.at })).json()) as { pages: { id: string }[] };
-    expect(list.pages.map((p) => p.id)).toEqual([id]);
-    const sock = await ownerSocket(a.at, id);
-    expect((await sock.mutate("addReply", { text: "from the account" })).error).toBeUndefined();
-    sock.close();
-    expect((await call("/api/pages", { token })).status).toBe(200);
-  });
-
-  it("a token another account claimed is 409; an unknown one 404; an owner token cannot claim", async () => {
-    const token = await newOwner();
-    const a = await account("user_a", "ana@example.com");
-    const b = await account("user_b", "ben@example.com");
-    expect((await call("/api/owners/claim", { method: "POST", token: a.at, json: { token } })).status).toBe(200);
-    expect((await call("/api/owners/claim", { method: "POST", token: b.at, json: { token } })).status).toBe(409);
-    expect((await call("/api/owners/claim", { method: "POST", token: b.at, json: { token: "x".repeat(43) } })).status).toBe(404);
-    expect((await call("/api/owners/claim", { method: "POST", token: await newOwner(), json: { token } })).status).toBe(403);
+    expect(list.pages.map((p) => p.id)).toEqual([kept]);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM grants WHERE page_id = ?").bind(orphan).first("n")).toBe(0);
+    expect(await env.DB.prepare("SELECT blocked FROM owners WHERE id = 'anon'").first("blocked")).toBe(1);
+    expect(await env.DB.prepare("SELECT blocked FROM owners WHERE id = 'claimed'").first("blocked")).toBe(0);
   });
 });
 
