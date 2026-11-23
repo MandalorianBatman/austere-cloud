@@ -81,6 +81,13 @@ describe("brand files", () => {
     expect([view.getUint32(16), view.getUint32(20)]).toEqual([1200, 630]);
   });
 
+  it("serves apple-touch-icon.png as a 180x180 PNG", async () => {
+    const res = await call("/apple-touch-icon.png");
+    expect(res.headers.get("content-type")).toBe("image/png");
+    const view = new DataView(await res.arrayBuffer());
+    expect([view.getUint32(16), view.getUint32(20)]).toEqual([180, 180]);
+  });
+
   it("answers other methods with 405", async () => {
     expect((await call("/robots.txt", { method: "POST" })).status).toBe(405);
   });

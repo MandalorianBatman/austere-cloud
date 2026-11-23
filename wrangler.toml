@@ -2,6 +2,12 @@ name = "austere-cloud"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 
+# PNGs are bundled as binary (src/og.png, src/apple-touch-icon.png).
+[[rules]]
+type = "Data"
+globs = ["**/*.png"]
+fallthrough = true
+
 # The whole hostname goes to this Worker; Cloudflare creates the proxied DNS record.
 routes = [{ pattern = "austere.blundertech.com", custom_domain = true }]
 

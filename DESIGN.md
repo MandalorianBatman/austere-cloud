@@ -13,9 +13,9 @@ The review sheet. The agent's plan is the drawing, reviewers' notes are redline 
 | `src/site.ts` | Tokens and all CSS, head metadata, nav, footer, `cmd()` command block, CSP |
 | `src/landing.ts` | `/` body and its metadata and JSON-LD |
 | `src/security.ts` | `/security` body |
-| `src/seo.ts` | `/robots.txt`, `/sitemap.xml`, `/llms.txt`, `/favicon.svg`, `/og.png` |
-| `src/og-png.ts` | Generated: the OG PNG as base64 |
-| `scripts/og/` | `og.html` template and `render.sh` (headless Chrome) |
+| `src/seo.ts` | `/robots.txt`, `/sitemap.xml`, `/llms.txt`, `/favicon.svg`, `/apple-touch-icon.png`, `/og.png` |
+| `src/og.png`, `src/apple-touch-icon.png` | Generated PNGs, bundled as binary through the `[[rules]] type = "Data"` rule in `wrangler.toml` (`src/assets.d.ts` types the import) |
+| `scripts/og/` | `og.html` template and `render.sh` (headless Chrome; writes both PNGs) |
 
 Static HTML and CSS, no build step, no script. CSP: `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'`. `img-src 'self'` is for the favicon (Firefox applies it). JSON-LD is a data block and is not blocked.
 
@@ -37,10 +37,10 @@ Three layers, all CSS custom properties on `:root` in `src/site.ts`: primitives 
 Contrast, measured by the designer: ink on paper 14.6, ink-2 8.2, muted 5.4, markup on paper 5.3, dark chalk on prussian 13.6, dark muted 7.0, dark coral 6.3. The sample sheet's product chrome uses `--p-app-*` (the real austere-axi review page colors) in both modes.
 
 **Type** (system faces only, CSP blocks web fonts):
-- Display: `"DIN Condensed","DIN Alternate","Bahnschrift Condensed","Bahnschrift","Roboto Condensed","Arial Narrow",system-ui`, weight 700, `font-stretch:75%`. The h1 and h2 use it.
+- Display: `"DIN Condensed","Bahnschrift Condensed","Bahnschrift","Display Fallback",system-ui`, weight 700, `font-stretch:75%`. The h1 and h2 use it. `Display Fallback` is an `@font-face` over local Arial, Helvetica, Liberation Sans, Roboto, Segoe UI or DejaVu Sans Bold with `size-adjust:69%`, which matches the width of Bahnschrift at 75%. Machines with neither DIN nor Bahnschrift get the same line breaks.
 - Body: `system-ui` stack. Mono: `ui-monospace` stack.
-- Where no condensed face exists (stock Linux) the fallback is wide, so `h1` is capped at 4.5rem at ≥1024 px and wraps in 3 to 4 lines. Do not set `overflow:hidden` on headings: DIN on macOS sits low on its line box.
-- Scale: hero `clamp(3rem,…,6.5rem)` (capped 4.5rem ≥1024 px), h2 `clamp(2rem,…,3.5rem)`, h3 22px, lede 19px, body 17px, label 12px 600 uppercase.
+- One hero scale: `--text-hero` `clamp(3rem,1.6rem + 6vw,7rem)` for every face. The h1 has `max-width:none; text-wrap:balance` (not a `ch` measure, since `ch` follows the face). Do not set `overflow:hidden` on headings: DIN on macOS sits low on its line box.
+- Scale: hero `--text-hero`, h2 `clamp(2rem,…,3.5rem)`, h3 22px, lede 19px, body 17px, label 12px 600 uppercase.
 
 **Space and layout:** 4 px base (`--space-1..9`), `--section-y` clamp 72 to 128 px, page max 1200 px, gutter clamp 16 to 40 px. Drafting grid: 24 px, hero and final CTA bands only.
 
@@ -66,7 +66,7 @@ One sequence on the hero sheet at load, about 1.4 s, then still: cloud reveals l
 
 ## Responsive
 
-≥1024 px: hero is 6 + 6 columns, primary action above the fold at 1280×800. Below: sheet stacks under the CTA; register drops LINK below 640 px. Verified: no horizontal scroll at 375 px.
+≥1024 px: hero is 6 + 6 columns, primary action above the fold at 1280×800. Below: sheet stacks under the CTA; register drops LINK below 640 px. Verified in Chromium and Firefox: no horizontal scroll at 320 to 768 px (`.steps li` needs `grid-template-columns:minmax(0,1fr)`, or Firefox sizes the column to the nowrap command). The nav is sticky from 640 px up and static below. Hero on the fallback face: 3 lines and the primary button above the fold at 1280×800 (bottom 792 px) and 1440×900 (806 px).
 
 ## Metadata and SEO
 
@@ -74,7 +74,8 @@ One sequence on the hero sheet at load, about 1.4 s, then still: cloud reveals l
 - `/` JSON-LD: `WebSite` and `SoftwareApplication`. No `offers` or `aggregateRating` until pricing exists. `/security`: `WebPage`.
 - `/` and `/security` carry no `noindex`. `/p/*`, `/api/*`, `/auth/*`, `/dash/*`, `/rt/*`, `/pk/*` are disallowed in `robots.txt` and the HTML ones send `x-robots-tag: noindex`.
 - `sitemap.xml` lists `/` and `/security`, with no `lastmod`.
-- `og.png` is rendered from `scripts/og/og.html` with Barlow Condensed Bold (OFL) for the raster only: `scripts/og/render.sh path/to/BarlowCondensed-Bold.ttf`. Commit the regenerated `src/og-png.ts`.
+- `apple-touch-icon.png` (180 px) is rendered from the favicon art by the same script.
+- `og.png` is rendered from `scripts/og/og.html` with Barlow Condensed Bold (OFL) for the raster only: `scripts/og/render.sh path/to/BarlowCondensed-Bold.ttf`. Commit the regenerated PNGs.
 
 ## Copy rules
 

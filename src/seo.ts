@@ -1,6 +1,7 @@
-// Crawler and brand files served from the Worker: /robots.txt, /sitemap.xml, /llms.txt, /favicon.svg, /og.png.
+// Crawler and brand files served from the Worker: /robots.txt, /sitemap.xml, /llms.txt, /favicon.svg, /og.png, /apple-touch-icon.png.
 
-import { OG_PNG_BASE64 } from "./og-png";
+import OG_PNG from "./og.png";
+import APPLE_ICON from "./apple-touch-icon.png";
 import { FAVICON_SVG, ORIGIN } from "./site";
 
 const ROBOTS = `User-agent: *
@@ -45,12 +46,14 @@ const LLMS = `# austere
 - [austere-cloud](${GH}/austere-cloud): the hosted service
 `;
 
-let ogPng: Uint8Array | undefined;
-
 function text(body: string, type: string): Response {
   return new Response(body, {
     headers: { "content-type": type, "cache-control": "public, max-age=3600", "x-content-type-options": "nosniff" },
   });
+}
+
+function png(body: ArrayBuffer, cache: string): Response {
+  return new Response(body, { headers: { "content-type": "image/png", "cache-control": cache, "x-content-type-options": "nosniff" } });
 }
 
 /** Handles the crawler and brand files; null for other paths. GET and HEAD only. */
@@ -70,10 +73,10 @@ export function handleSite(request: Request, path: string): Response | null {
       res = text(FAVICON_SVG, "image/svg+xml");
       break;
     case "/og.png":
-      ogPng ??= Uint8Array.from(atob(OG_PNG_BASE64), (c) => c.charCodeAt(0));
-      res = new Response(ogPng as BodyInit, {
-        headers: { "content-type": "image/png", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" },
-      });
+      res = png(OG_PNG, "public, max-age=86400");
+      break;
+    case "/apple-touch-icon.png":
+      res = png(APPLE_ICON, "public, max-age=86400");
       break;
     default:
       return null;
