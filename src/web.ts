@@ -3,6 +3,7 @@
 //   /auth/callback                → code exchange, `austere_session` cookie, back to return_to
 //   /auth/logout                  → cookie cleared, AuthKit session ended
 //   /auth/config                  → { clientId, apiBase } for the CLI's device flow
+//   /security                     → public: who can open a shared page
 //   /                             → signed out: the landing page; signed in: my pages and their grants, pages shared with me
 //   POST /dash/pages/:id/grants[/remove]  → the dashboard's grant forms
 import type { Env } from "./env";
@@ -27,6 +28,7 @@ import {
 } from "./session";
 import { WorkosRefused, accountsConfigured, authorizeUrl, exchangeCode, logoutUrl, requireAccounts } from "./workos";
 import { landing } from "./landing";
+import { security } from "./security";
 import { HttpError, escapeHtml, json, randomId } from "./util";
 
 const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" };
@@ -188,6 +190,7 @@ export async function handleWeb(request: Request, env: Env, path: string): Promi
   if (path === "/auth/callback") return allow("GET", () => callback(request, env));
   if (path === "/auth/logout") return allow("GET, POST", () => logout(request, env));
   if (path === "/auth/config") return allow("GET", () => config(env));
+  if (path === "/security") return allow("GET, HEAD", () => security(accountsConfigured(env) ? signInUrl("/") : null));
   const grant = /^\/dash\/pages\/([^/]+)\/grants(\/remove)?$/.exec(path);
   if (path !== "/" && !grant) return null;
   return allow(grant ? "POST" : "GET, HEAD", async () => {

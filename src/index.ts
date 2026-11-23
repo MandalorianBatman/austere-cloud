@@ -3,6 +3,7 @@ import { handleApi } from "./api";
 import { handleServe } from "./serve";
 import { handleWeb } from "./web";
 import { serveRuntime } from "./runtime";
+import { handleSite } from "./seo";
 import { HttpError, json } from "./util";
 import { assetToken, reviewerSync } from "./sync";
 
@@ -26,6 +27,9 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (request.method !== "GET" && request.method !== "HEAD") return new Response("method not allowed", { status: 405 });
     return serveRuntime(request, env, ctx, rt[1], rt[2]);
   }
+
+  const site = handleSite(request, path);
+  if (site) return site;
 
   return (await handleWeb(request, env, path)) ?? (await handleServe(request, env, path)) ?? new Response("not found", { status: 404 });
 }
