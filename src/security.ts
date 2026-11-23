@@ -1,6 +1,7 @@
 // `/security`: who can open a published page, what the service stores, and what is not built yet.
 // Every statement here is a fact from the austere-axi and austere-cloud docs; keep it that way.
 
+import type { Theme } from "./theme";
 import { ADVISORY, ORIGIN, SHARE_DESIGN, document, pageHeaders, type Meta } from "./site";
 
 const META: Meta = {
@@ -83,8 +84,9 @@ ${LIMITS.map(([k, v]) => `<tr><th scope="row">${k}</th><td>${v}</td></tr>`).join
 </div></div>`;
 
 /** The security page; `signIn` is the sign-in URL when accounts are on, else null. */
-export function security(signIn: string | null): Response {
-  return new Response(document(META, signIn, BODY), {
-    headers: pageHeaders("public, max-age=3600"),
+export function security(signIn: string | null, theme: Theme): Response {
+  return new Response(document(META, signIn, theme, BODY), {
+    // The page depends on the theme cookie: private, and `vary: cookie` from pageHeaders.
+    headers: pageHeaders("private, max-age=3600"),
   });
 }

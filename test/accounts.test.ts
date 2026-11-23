@@ -446,6 +446,19 @@ describe("dashboard", () => {
     expect(bad).toContain('aria-invalid="true"');
   });
 
+  it("signed in: dark by default; the theme cookie renders light; the toggle returns to /", async () => {
+    addUser("user_o", "olga@example.com");
+    const { cookie } = await sessionCookie("user_o");
+    const dark = await (await call("/", { headers: { cookie } })).text();
+    expect(dark).toContain('<html lang="en" data-theme="dark">');
+    expect(dark).toContain('aria-label="Switch to light theme"');
+    expect(dark).toContain('<input type="hidden" name="return_to" value="/">');
+    const light = await (await call("/", { headers: { cookie: `${cookie}; austere_theme=light` } })).text();
+    expect(light).toContain('<html lang="en" data-theme="light">');
+    expect(light).toContain('<meta name="theme-color" content="#F3F5F7">');
+    expect(light).toContain('aria-label="Switch to dark theme"');
+  });
+
   it("signed in: private head (no canonical, Open Graph or JSON-LD), site shell, no old inline styles", async () => {
     addUser("user_o", "olga@example.com");
     const res = await call("/", { headers: { cookie: (await sessionCookie("user_o")).cookie } });

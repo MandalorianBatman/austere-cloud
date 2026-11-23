@@ -4,6 +4,7 @@
 //   /auth/logout                  → cookie cleared, AuthKit session ended
 //   /auth/config                  → { clientId, apiBase } for the CLI's device flow
 //   /security                     → public: who can open a shared page
+//   POST /theme                   → theme cookie (dark or light), 303 back to return_to
 //   /                             → signed out: the landing page; signed in: my pages and their grants, pages shared with me
 //   POST /dash/pages/:id/grants[/remove]  → the dashboard's grant forms
 import type { Env } from "./env";
@@ -31,6 +32,7 @@ import { WorkosRefused, accountsConfigured, authorizeUrl, exchangeCode, logoutUr
 import { landing } from "./landing";
 import { security } from "./security";
 import { privateDocument } from "./site";
+import { THEME_COOKIE, THEME_MAX_AGE_S, parseTheme, themeOf } from "./theme";
 import { HttpError, escapeHtml, json, randomId } from "./util";
 
 // same-origin, not no-referrer: under no-referrer a browser sends `Origin: null` on the dashboard's form POSTs, which dashGrant refuses.
@@ -49,10 +51,10 @@ function redirect(location: string, cookies: string[] = [], status = 303): Respo
 }
 
 /** A private HTML page in the site shell (noindex, no-store). `account` shows the email and Sign Out in the nav. */
-function page(env: Env, title: string, account: User | null, body: string, status = 200): Response {
+function page(request: Request, env: Env, title: string, account: User | null, body: string, status = 200): Response {
   // The sign-out form's answer redirects to WorkOS, and form-action covers redirects.
   const formAction = `'self' ${new URL(workosApi(env)).origin}`;
-  return new Response(privateDocument(`${title} · austere`, account, body), {
+  return new Response(privateDocument(`${title} · austere`, account, themeOf(request), body), {
     status,
     headers: {
       ...PRIVATE,
@@ -83,7 +85,7 @@ async function callback(request: Request, env: Env): Promise<Response> {
   const clearState = cookieHeader(request, STATE_COOKIE, "", "/auth", 0);
   const failed = (why: string) =>
     withSession(
-      page(env, "Sign-in failed", null, `<div class="read"><div class="wrap read-in"><h1>Sign-in failed</h1><p>${escapeHtml(why)}</p><p><a href="/auth/login">Try again</a></p></div></div>`, 400),
+      page(request, env, "Sign-in failed", null, `<div class="read"><div class="wrap read-in"><h1>Sign-in failed</h1><p>${escapeHtml(why)}</p><p><a href="/auth/login">Try again</a></p></div></div>`, 400),
       { userId: null, setCookie: clearState },
     );
   if (url.searchParams.get("error")) return failed(url.searchParams.get("error_description") || url.searchParams.get("error")!);
@@ -119,6 +121,20 @@ function config(env: Env): Response {
   return json({ clientId: env.WORKOS_CLIENT_ID, apiBase: workosApi(env) });
 }
 
+/** `POST /theme`: the toggle. Sets the cookie to the chosen theme and answers 303 to a same-origin `return_to`. */
+async function setTheme(request: Request): Promise<Response> {
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    throw new HttpError(400, "expected a form");
+  }
+  const theme = parseTheme(form.get("theme") as string | null);
+  if (!theme) throw new HttpError(400, "theme must be dark or light");
+  const ret = form.get("return_to");
+  return redirect(returnPath(typeof ret === "string" ? ret : null), [cookieHeader(request, THEME_COOKIE, theme, "/", THEME_MAX_AGE_S)]);
+}
+
 // ── dashboard ──
 
 /** Pages shared with the account: a grant for its email on a live, published page, with the owner's name or email. */
@@ -141,14 +157,14 @@ async function sharedPages(env: Env, user: User): Promise<SharedPage[]> {
 }
 
 async function dashboard(request: Request, env: Env, session: Session): Promise<Response> {
-  if (!accountsConfigured(env)) return landing(null);
-  if (!session.userId) return landing(signInUrl("/"));
+  if (!accountsConfigured(env)) return landing(null, themeOf(request));
+  if (!session.userId) return landing(signInUrl("/"), themeOf(request));
   const url = new URL(request.url);
   const user = await ensureUser(env, session.userId);
   const owner = { id: await accountOwner(env, user.id), user };
   const [pages, grants, shared] = await Promise.all([ownedPages(env, owner), grantsByOwnedPage(env, user.id), sharedPages(env, user)]);
   const body = dashboardBody({ user, origin: url.origin, pages, grants, shared, notice: noticeFrom(url.searchParams), now: Date.now() });
-  return page(env, "Your pages", user, body);
+  return page(request, env, "Your pages", user, body);
 }
 
 /**
@@ -194,8 +210,9 @@ export async function handleWeb(request: Request, env: Env, path: string): Promi
   if (path === "/auth/login") return allow("GET", () => login(request, env));
   if (path === "/auth/callback") return allow("GET", () => callback(request, env));
   if (path === "/auth/logout") return allow("GET, POST", () => logout(request, env));
+  if (path === "/theme") return allow("POST", () => setTheme(request));
   if (path === "/auth/config") return allow("GET", () => config(env));
-  if (path === "/security") return allow("GET, HEAD", () => security(accountsConfigured(env) ? signInUrl("/") : null));
+  if (path === "/security") return allow("GET, HEAD", () => security(accountsConfigured(env) ? signInUrl("/") : null, themeOf(request)));
   const grant = /^\/dash\/pages\/([^/]+)\/grants(\/remove)?$/.exec(path);
   if (path !== "/" && !grant) return null;
   return allow(grant ? "POST" : "GET, HEAD", async () => {

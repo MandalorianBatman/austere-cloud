@@ -92,3 +92,70 @@ describe("brand files", () => {
     expect((await call("/robots.txt", { method: "POST" })).status).toBe(405);
   });
 });
+
+describe("theme", () => {
+  const light = { cookie: "austere_theme=light" };
+  const themeOf = (html: string) => /<html lang="en" data-theme="(\w+)">/.exec(html)![1];
+
+  it("is dark with no cookie, on / and /security, and the toggle offers light", async () => {
+    for (const path of ["/", "/security"]) {
+      const html = await (await call(path)).text();
+      expect(themeOf(html)).toBe("dark");
+      expect(html).toContain('<meta name="color-scheme" content="dark">');
+      expect(html).toContain('<meta name="theme-color" content="#000000">');
+      expect(html).toContain('<button class="theme" name="theme" value="light" aria-label="Switch to light theme">');
+      expect(html).toContain(`<input type="hidden" name="return_to" value="${path}">`);
+    }
+  });
+
+  it("the light cookie renders light and the toggle offers dark; an unknown value is dark", async () => {
+    for (const path of ["/", "/security"]) {
+      const html = await (await call(path, { headers: light })).text();
+      expect(themeOf(html)).toBe("light");
+      expect(html).toContain('<meta name="theme-color" content="#F3F5F7">');
+      expect(html).toContain('aria-label="Switch to dark theme"');
+    }
+    expect(themeOf(await (await call("/", { headers: { cookie: "austere_theme=neon" } })).text())).toBe("dark");
+  });
+
+  it("POST /theme sets a year-long cookie and redirects to the same-origin return_to", async () => {
+    const res = await call("/theme", { method: "POST", body: new URLSearchParams({ theme: "light", return_to: "/security" }) });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/security");
+    const cookie = res.headers.get("set-cookie")!;
+    expect(cookie).toContain("austere_theme=light");
+    expect(cookie).toContain("Max-Age=31536000");
+    expect(cookie).toContain("Path=/");
+    expect(cookie).toContain("SameSite=Lax");
+  });
+
+  it("POST /theme never redirects off site", async () => {
+    for (const bad of ["https://evil.test/", "//evil.test", "/\\evil.test", "javascript:alert(1)", ""]) {
+      const res = await call("/theme", { method: "POST", body: new URLSearchParams({ theme: "dark", return_to: bad }) });
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe("/");
+    }
+  });
+
+  it("POST /theme refuses an unknown theme and other methods", async () => {
+    expect((await call("/theme", { method: "POST", body: new URLSearchParams({ theme: "neon" }) })).status).toBe(400);
+    const get = await call("/theme");
+    expect(get.status).toBe(405);
+    expect(get.headers.get("allow")).toBe("POST");
+  });
+
+  it("the toggle's form is allowed by the CSP, which still has no script", async () => {
+    for (const path of ["/", "/security"]) {
+      const csp = (await call(path)).headers.get("content-security-policy")!;
+      expect(csp).toContain("form-action 'self'");
+      expect(csp).not.toContain("script-src");
+      expect(csp).toContain("default-src 'none'");
+    }
+  });
+
+  it("/security is not shared across themes by caches", async () => {
+    const res = await call("/security");
+    expect(res.headers.get("vary")).toBe("cookie");
+    expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
+  });
+});

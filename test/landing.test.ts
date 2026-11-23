@@ -6,7 +6,7 @@ const textOf = (html: string) => html.replace(/<[^>]+>/g, "");
 
 describe("landing install path", () => {
   it("shows the install commands before the first austere-axi command", async () => {
-    const html = await landing(null).text();
+    const html = await landing(null, "dark").text();
     // The hero's own install line sits before the sample sheet.
     const hero = html.slice(0, html.indexOf('class="sheet hero-sheet"'));
     expect(hero).toContain("<code>npm install -g austere-axi</code>");
@@ -29,7 +29,7 @@ describe("landing install path", () => {
   });
 
   it("runs cloud on, then cloud login, before publish in Get started", async () => {
-    const html = await landing(null).text();
+    const html = await landing(null, "dark").text();
     const start = textOf(html.slice(html.indexOf('id="start"'), html.indexOf('id="private"')));
     const on = start.indexOf("austere-axi cloud on");
     const login = start.indexOf("austere-axi cloud login");
@@ -40,26 +40,26 @@ describe("landing install path", () => {
   });
 
   it("points Get started at the install section", async () => {
-    expect(await landing(null).text()).toContain('href="#start">Get started');
+    expect(await landing(null, "dark").text()).toContain('href="#start">Get started');
   });
 });
 
 describe("landing content", () => {
   it("sells the review, not the stack", async () => {
-    const text = textOf(await landing(null).text());
+    const text = textOf(await landing(null, "dark").text());
     expect(text).toContain("Send your agent’s plan out for review.");
     expect(text).not.toMatch(/Runs on|Cloudflare|Durable Object|mutation n=/);
   });
 
   it("shows Sign In only when accounts are on", async () => {
-    const off = await landing(null).text();
-    const on = await landing("/auth/login?return_to=%2F").text();
+    const off = await landing(null, "dark").text();
+    const on = await landing("/auth/login?return_to=%2F", "dark").text();
     expect(off).not.toContain("Sign In");
     expect(on).toContain('href="/auth/login?return_to=%2F">Sign In');
   });
 
   it("carries canonical, social and structured metadata, without pricing", async () => {
-    const html = await landing(null).text();
+    const html = await landing(null, "dark").text();
     expect(html).toContain('<link rel="canonical" href="https://austere.blundertech.com/">');
     expect(html).toContain('<meta property="og:image" content="https://austere.blundertech.com/og.png">');
     expect(html).toContain('<meta name="twitter:card" content="summary_large_image">');
@@ -70,7 +70,7 @@ describe("landing content", () => {
   });
 
   it("runs no script and loads only same-origin images", async () => {
-    const res = landing(null);
+    const res = landing(null, "dark");
     const html = await res.text();
     expect(html).not.toMatch(/<script(?![^>]*ld\+json)/);
     expect(html).not.toMatch(/(src|href)="https?:\/\/[^"]*\.(png|jpe?g|svg|woff2?)"/);
