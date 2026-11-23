@@ -33,7 +33,8 @@ import { security } from "./security";
 import { privateDocument } from "./site";
 import { HttpError, escapeHtml, json, randomId } from "./util";
 
-const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" };
+// same-origin, not no-referrer: under no-referrer a browser sends `Origin: null` on the dashboard's form POSTs, which dashGrant refuses.
+const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "same-origin" };
 
 /** A same-origin path to return to after sign-in; anything else is `/`. */
 export function returnPath(raw: string | null): string {

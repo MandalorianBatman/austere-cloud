@@ -459,7 +459,10 @@ mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0)}
 .dash-empty{display:grid;gap:var(--space-4);justify-items:start;border:var(--rule-ink) solid var(--color-ink);background:var(--color-sheet);padding:var(--space-5);min-width:0;overflow-wrap:anywhere}
 .dash-empty .cmd{width:100%}
 .dash-empty h3{font-size:var(--text-h3)}
+.url:focus-visible{outline:var(--focus-ring);outline-offset:var(--focus-offset)}
 @media (max-width:639px){
+.entry-head h3 a,.shared a,.dash-empty p a{display:flex;align-items:center;min-height:44px}
+.url{display:flex;align-items:center;min-height:44px}
 .acl .btn.sm,.grant .btn{min-height:44px}
 .acl th,.acl td{display:block;width:auto;text-align:left;padding:var(--space-1) var(--space-4)}
 .acl thead{display:none}

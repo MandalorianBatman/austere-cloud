@@ -400,7 +400,13 @@ describe("dashboard", () => {
     const owner = await account("user_o", "olga@example.com");
     const id = await accountPage(owner.at);
     const { cookie } = await sessionCookie("user_o");
-    const post = (path: string, email: string) => call(path, { method: "POST", headers: { cookie, origin: ORIGIN }, body: new URLSearchParams({ email }) });
+    // The Origin a browser sends on a same-origin form POST depends on the policy the form's page
+    // sent: under no-referrer it is "null" (Fetch spec). Read the policy from the real page.
+    const policy = (await call("/", { headers: { cookie } })).headers.get("referrer-policy");
+    expect(policy).toBe("same-origin");
+    const browserOrigin = policy === "no-referrer" ? "null" : ORIGIN;
+    const post = (path: string, email: string) =>
+      call(path, { method: "POST", headers: { cookie, origin: browserOrigin, "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate" }, body: new URLSearchParams({ email }) });
     const where = (res: Response) => res.headers.get("location");
     const entry = `/?page=${id}`;
 
@@ -477,6 +483,21 @@ describe("dashboard", () => {
     expect(html).toContain("pat@example.com");
     expect(html).toContain('<time class="soon"');
     expect(html).toContain("Expires in 2 days");
+  });
+
+  it("shared with you: an owner with no users row still lists the page, without an owner name", async () => {
+    const owner = await account("user_o", "olga@example.com", "Olga");
+    const id = await accountPage(owner.at);
+    await grantTo(owner.at, id, "ana@example.com");
+    await env.DB.prepare("PRAGMA foreign_keys = OFF").run();
+    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind("user_o").run();
+    addUser("user_a", "ana@example.com");
+    const res = await call("/", { headers: { cookie: (await sessionCookie("user_a")).cookie } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain(`href="/p/${id}"`);
+    expect(html).not.toContain("Olga");
+    expect(html).not.toContain("olga@example.com");
   });
 
   it("each owned page's register lists only its own grants", async () => {
