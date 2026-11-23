@@ -1,6 +1,7 @@
 // The signed-out face of `/`: what austere cloud is, and the way in.
 // Static HTML and CSS only: the CSP allows no script and no fetch; the only asset is the same-origin favicon.
 
+import type { Theme } from "./theme";
 import { INSTALL_GUIDE, ORIGIN, CLOUD_REPO, REPO, cmd, document, pageHeaders, type Meta } from "./site";
 
 const TITLE = "Share AI coding agent plans for team review · austere";
@@ -204,8 +205,8 @@ ${cmd("npm install -g austere-axi")}
 }
 
 /** The landing page; `signIn` is the sign-in URL when accounts are on, else null. */
-export function landing(signIn: string | null): Response {
-  return new Response(document(LANDING_META, signIn, body(signIn)), {
+export function landing(signIn: string | null, theme: Theme): Response {
+  return new Response(document(LANDING_META, signIn, theme, body(signIn)), {
     // `/` is the dashboard once signed in, so it is never cached.
     headers: pageHeaders("no-store"),
   });

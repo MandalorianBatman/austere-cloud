@@ -4,7 +4,7 @@ Covers `/` (signed out), `/security` and the signed-in dashboard at `/`.
 
 ## Direction
 
-The review sheet. The agent's plan is the drawing, reviewers' notes are redline marks, the owner signs off. Light mode is a whiteprint; dark mode is a cyanotype blueprint (`prefers-color-scheme`, no toggle). One red pencil does the markup: revision clouds, delta marks, leader lines, revoked links, focus rings. Square corners, ruled title blocks. No near-black page, glow, bento grid or floating terminal.
+The review sheet. The agent's plan is the drawing, reviewers' notes are redline marks, the owner signs off. Dark is the default: black ground, graphite panels, near-white ink. Light is the whiteprint, one click away through a no-script toggle. One red pencil does the markup: revision clouds, delta marks, leader lines, revoked links, focus rings. It is retuned for black in dark. Square corners, ruled title blocks. No glow, bento grid or floating terminal.
 
 ## Where it lives
 
@@ -17,24 +17,47 @@ The review sheet. The agent's plan is the drawing, reviewers' notes are redline 
 | `src/og.png`, `src/apple-touch-icon.png` | Generated PNGs, bundled as binary through the `[[rules]] type = "Data"` rule in `wrangler.toml` (`src/assets.d.ts` types the import) |
 | `scripts/og/` | `og.html` template and `render.sh` (headless Chrome; writes both PNGs) |
 
-Static HTML and CSS, no build step, no script. CSP: `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'`. `img-src 'self'` is for the favicon (Firefox applies it). JSON-LD is a data block and is not blocked.
+Static HTML and CSS, no build step, no script. CSP: `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`. `form-action 'self'` is for the theme toggle. `img-src 'self'` is for the favicon (Firefox applies it). JSON-LD is a data block and is not blocked.
+
+## Theme
+
+Dark is the default for every visitor and does not depend on `prefers-color-scheme`. The visitor can switch to light and the choice persists, with no script:
+
+1. The toggle is a `<form method="post" action="/theme">` with a hidden `return_to` and one `<button name="theme" value="<target>">`. Its accessible name is "Switch to light theme" or "Switch to dark theme". Visible cells always read Dark | Light; the current one is filled.
+2. `POST /theme` (`src/web.ts`) sets the `austere_theme` cookie (`dark` or `light`, 1 year, `Path=/`, `SameSite=Lax`, `HttpOnly`) and answers 303 to `returnPath(return_to)`: a same-origin path, else `/`. An unknown theme is a 400.
+3. Every page renders `<html data-theme="…">` from the cookie (`themeOf()` in `src/theme.ts`; no cookie or an unknown value is dark), one `<meta name="color-scheme">` with that theme, and one `<meta name="theme-color">` (`#000000` dark, `#F3F5F7` light).
+4. The toggle sits in the nav on `/` and `/security` (after the links, before Sign In) and first in the dashboard's account group. Error pages without an account show it alone. It returns to the page it was on; on private pages that is `/`.
+5. `/security` is `private, max-age=3600` with `Vary: cookie`, since its HTML depends on the cookie. `/` and the private pages are `no-store`.
+
+`/favicon.svg`, `/og.png` and `/apple-touch-icon.png` are rendered in the dark default only.
 
 ## Tokens
 
-Three layers, all CSS custom properties on `:root` in `src/site.ts`: primitives (`--p-*`), semantic (`--color-*`), component (`--btn-*`, `--revcloud-*`, `--delta-size`). Dark mode only re-maps the semantic layer.
+Three layers, all CSS custom properties on `:root` in `src/site.ts`: primitives (`--p-*`), semantic (`--color-*`), component (`--btn-*`, `--revcloud-*`, `--delta-size`). `:root` holds the light values. `:root[data-theme="dark"]` re-maps only the semantic layer.
+
+Border colors have their own tokens, so borders and text can differ in dark: `--color-line` (hairlines and 1.5 px rules), `--color-line-heavy` (3 px rules), `--color-line-control` (borders that identify a control: `.btn`, `.field`, the theme toggle). In light all three are ink.
 
 | Token | Light | Dark |
 |---|---|---|
-| `--color-ground` | #F3F5F7 | #0D2741 |
-| `--color-sheet` | #FFFFFF | #11304F |
-| `--color-ink` | #13223A | #EDF3F9 |
-| `--color-ink-2` | #3B4A62 | #BFD0E2 |
-| `--color-muted` | #56657B | #9BB3CC |
-| `--color-markup` | #BF2E18 | #FF8466 |
+| `--color-ground` | #F3F5F7 | #000000 |
+| `--color-sheet` | #FFFFFF | #0A0A0A |
+| `--color-panel`, `--color-grid` | #E6EBF0, #E3E9EF | #111113 |
+| `--color-line` | #13223A | #222226 |
+| `--color-line-heavy` | #13223A | #3F3F46 |
+| `--color-line-control` | #13223A | #71717A |
+| `--color-ink` | #13223A | #EDEDED |
+| `--color-ink-2` | #3B4A62 | #D4D4D8 |
+| `--color-muted` | #56657B | #A1A1AA |
+| `--color-markup` | #BF2E18 | #F2553C |
+| `--color-markup-strong` (red text) | #9E2412 | #FF6A4D |
+| `--color-action` / `--color-on-action` | #13223A / #F3F5F7 | #EDEDED / #000000 |
 | `--color-held` (HELD tag only) | #F3DD4A | same |
-| `--color-inverse` (one band) | #0D2741 | #F3F5F7 |
+| `--color-inverse` / `--color-on-inverse` (one band) | #0D2741 / #EDF3F9 | #EDEDED / #0A0A0A |
+| `--shadow-mock` | shipped | none |
 
-Contrast, measured by the designer: ink on paper 14.6, ink-2 8.2, muted 5.4, markup on paper 5.3, dark chalk on prussian 13.6, dark muted 7.0, dark coral 6.3. The sample sheet's product chrome uses `--p-app-*` (the real austere-axi review page colors) in both modes.
+Contrast, measured by the designer (WCAG 2.x), dark: ink on ground / sheet / panel 17.94 / 16.91 / 16.11; ink-2 on ground 14.21; muted on ground / sheet / panel 8.19 / 7.72 / 7.36; markup-strong on ground 7.42; markup on ground 6.14 (needs 3); on-inverse on inverse 16.91; line-control on ground 4.35 (needs 3). Light: ink on paper 14.58, ink-2 8.21, muted 5.42, markup-strong 7.08, markup 5.31. Every text pair is at least 4.5:1 in both themes. Hairlines (`--color-line`, `--color-grid`) are below 3:1 on purpose: they are decoration, and every boundary that identifies a control uses `--color-line-control`. The sample sheet's product chrome uses `--p-app-*` (the real austere-axi review page colors) in both themes.
+
+Retired: the cyanotype (Prussian blue) dark palette and its `prefers-color-scheme` block. The light inverse band still uses `--p-prussian-900`, `--p-chalk-50` and `--p-chalk-200`.
 
 **Type** (system faces only, CSP blocks web fonts):
 - Display: `"DIN Condensed","Bahnschrift Condensed","Bahnschrift","Display Fallback",system-ui`, weight 700, `font-stretch:75%`. The h1 and h2 use it. `Display Fallback` is an `@font-face` over local Arial, Helvetica, Liberation Sans, Roboto, Segoe UI or DejaVu Sans Bold with `size-adjust:69%`, which matches the width of Bahnschrift at 75%. Machines with neither DIN nor Bahnschrift get the same line breaks.
@@ -48,7 +71,8 @@ Contrast, measured by the designer: ink on paper 14.6, ink-2 8.2, muted 5.4, mar
 
 ## Components
 
-- **Nav:** sticky, 1.5 px bottom rule. How It Works, Security, Docs, GitHub. **Sign In** (ghost) only when accounts are on.
+- **Nav:** sticky, 1.5 px bottom rule. How It Works, Security, Docs, GitHub, the theme toggle. **Sign In** (ghost) only when accounts are on.
+- **Theme toggle `.theme`:** a two-cell ruled segment, "Dark | Light", 40 px (44 px below 640 px). The current cell is filled with `--color-action`; the other is muted and takes a panel fill on hover. Border is `--color-line-control`.
 - **Buttons:** 48 px, square. Primary = solid ink; ghost = 1.5 px ink border. Hover changes background only. Red is never a fill.
 - **Command block `cmd()`:** sheet fill, 1.5 px ink border, mono. The prompt (`$`, `›`) is `user-select:none`; the command is `user-select:all`. Scrolls horizontally instead of wrapping, so 375 px never breaks `austere-axi` at the hyphen.
 - **Revision cloud `.revcloud`:** `::after` radial-gradient scallops, masked to the box edge with `mask-composite: exclude` (`-webkit-mask-composite: xor`). Gradient stops are in px (calc stops did not render). Leave `--revcloud-r` (10 px) clear around the target. Use it twice: hero row 3 and outcome 3.
@@ -56,7 +80,7 @@ Contrast, measured by the designer: ink on paper 14.6, ink-2 8.2, muted 5.4, mar
 - **Sample sheet:** product mock inside a ruled sheet with `role="img"` and an `aria-label`; contents are `aria-hidden`. Register table below it (ISSUED TO, LINK, STATUS), LINK column hidden under 640 px. `Revoked` is red with a 2 px strikethrough.
 - **HELD tag:** label type on `--color-held`. SENT is plain muted text. State is never color alone.
 - **Title block (footer):** 3-column ruled grid ≥640 px, stacked below.
-- **Inverse band:** the one committed color field; flips to paper in dark mode.
+- **Inverse band:** the one committed color field; flips to #EDEDED in dark. If that is too bright, retune three tokens: `--color-inverse`, `--color-on-inverse`, `--color-on-inverse-2`.
 - **FAQ:** native `<details>`, no JS.
 - **Focus:** 2 px `--color-markup` outline, 3 px offset, on links, buttons and `summary`.
 - **Dashboard** (signed-in `/`, `src/dashboard.ts`): the drawing register. Private head (`noindex`, no canonical, Open Graph or JSON-LD) and nav (Docs, Security, GitHub, the account email above 640 px, **Sign Out** ghost `sm`). h1 "Your pages" at `--text-h2`; 8/4 columns from 1100 px, one column below, Shared under Your pages.
@@ -75,7 +99,7 @@ One sequence on the hero sheet at load, about 1.4 s, then still: cloud reveals l
 
 ## Metadata and SEO
 
-- Canonical host `https://austere.blundertech.com`. Each page has `<title>`, description, `canonical`, Open Graph, Twitter `summary_large_image`, `theme-color` for both schemes.
+- Canonical host `https://austere.blundertech.com`. Each page has `<title>`, description, `canonical`, Open Graph, Twitter `summary_large_image`, and one `theme-color` that follows the rendered theme.
 - `/` JSON-LD: `WebSite` and `SoftwareApplication`. No `offers` or `aggregateRating` until pricing exists. `/security`: `WebPage`.
 - `/` and `/security` carry no `noindex`. `/p/*`, `/api/*`, `/auth/*`, `/dash/*`, `/rt/*`, `/pk/*` are disallowed in `robots.txt` and the HTML ones send `x-robots-tag: noindex`.
 - `sitemap.xml` lists `/` and `/security`, with no `lastmod`.
@@ -88,4 +112,4 @@ Curly quotes. No em dashes in prose. Sentence-case headings, title-case nav labe
 
 ## Not verified
 
-WebKit does not launch on the build machine (missing system libraries), so Safari rendering of the mask and DIN metrics on macOS are unchecked. Chromium and Firefox were checked at 1280 px and 375 px, light and dark.
+The dark theme and the toggle (RLM-459) were rendered in Chromium only, at 1280 px and 375 px, dark and light. Safari and Firefox were not checked for them. WebKit does not launch on the build machine (missing system libraries), so Safari rendering of the mask and DIN metrics on macOS are unchecked.
