@@ -1,6 +1,6 @@
 # Design system: austere cloud public pages
 
-Covers `/` (signed out) and `/security`. The signed-in dashboard at `/` is plain HTML and is out of scope.
+Covers `/` (signed out), `/security` and the signed-in dashboard at `/`.
 
 ## Direction
 
@@ -59,6 +59,11 @@ Contrast, measured by the designer: ink on paper 14.6, ink-2 8.2, muted 5.4, mar
 - **Inverse band:** the one committed color field; flips to paper in dark mode.
 - **FAQ:** native `<details>`, no JS.
 - **Focus:** 2 px `--color-markup` outline, 3 px offset, on links, buttons and `summary`.
+- **Dashboard** (signed-in `/`, `src/dashboard.ts`): the drawing register. Private head (`noindex`, no canonical, Open Graph or JSON-LD) and nav (Docs, Security, GitHub, the account email above 640 px, **Sign Out** ghost `sm`). h1 "Your pages" at `--text-h2`; 8/4 columns from 1100 px, one column below, Shared under Your pages.
+  - **Register entry:** one `<article>` per page, a sheet with 1.5 px ink border and square corners. Head: h3 title link (22 px), label-type meta (expiry, notes), the page URL in mono, `user-select:all`, scrolling by itself. Then the access register: a real `<table>` (Account, Access, owner row first, one row per grant with a ghost `sm` Revoke), a muted note, and the grant form. Below 640 px rows stack and targets are 44 px.
+  - **Input:** `.field`, same 1.5 px ink border, square corners and sheet fill as the buttons, visible label above. In error: `aria-invalid` and a 2 px markup border.
+  - **Notices:** a ruled row inside the entry, above the register; `role=status` or `role=alert`. Errors add a 3 px markup bar and markup-strong text. Expiry at 3 days or less, or less than 24 h, is markup-strong at weight 600 and says so in words ("Expires in 2 days", "Expires today").
+  - Not used here: revision cloud, delta mark, grid background, inverse band, shadow, motion.
 
 ## Motion
 

@@ -103,10 +103,38 @@ export async function listGrants(env: Env, pageId: string): Promise<Grant[]> {
 /** Most grants one page may hold. */
 export const MAX_GRANTS = 100;
 
+/** The page already holds `MAX_GRANTS` grants. A 400 on the API; the dashboard shows its own notice. */
+export class GrantLimitError extends HttpError {
+  constructor() {
+    super(400, `a page may have at most ${MAX_GRANTS} grants`);
+  }
+}
+
+/**
+ * The grants on every live page the account owns, in one query, by page id. The page filter is
+ * `ownedPages()`'s, so a page missing here is missing there.
+ */
+export async function grantsByOwnedPage(env: Env, userId: string): Promise<Map<string, Grant[]>> {
+  const { results } = await env.DB.prepare(
+    `SELECT g.page_id, g.email, g.role, g.created_at FROM grants g JOIN pages p ON p.id = g.page_id
+     WHERE p.owner_id IN (SELECT id FROM owners WHERE user_id = ?1) AND p.published_at IS NOT NULL AND p.taken_down = 0 AND p.expires_at > ?2
+     ORDER BY g.created_at, g.email`,
+  )
+    .bind(userId, Date.now())
+    .all<{ page_id: string; email: string; role: PageRole; created_at: number }>();
+  const by = new Map<string, Grant[]>();
+  for (const r of results) {
+    const list = by.get(r.page_id) ?? [];
+    list.push({ email: r.email, role: r.role, createdAt: r.created_at });
+    by.set(r.page_id, list);
+  }
+  return by;
+}
+
 /** Grants page `pageId` to `email`. Returns false when the grant was there already. */
 export async function addGrant(env: Env, pageId: string, email: string): Promise<boolean> {
   const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM grants WHERE page_id = ?").bind(pageId).first<{ n: number }>();
-  if ((n?.n ?? 0) >= MAX_GRANTS) throw new HttpError(400, `a page may have at most ${MAX_GRANTS} grants`);
+  if ((n?.n ?? 0) >= MAX_GRANTS) throw new GrantLimitError();
   const r = await env.DB.prepare("INSERT OR IGNORE INTO grants (page_id, email, role, created_at) VALUES (?, ?, 'collaborator', ?)")
     .bind(pageId, email, Date.now())
     .run();
