@@ -396,6 +396,103 @@ describe("dashboard", () => {
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM grants").first<{ n: number }>())!.n).toBe(0);
   });
 
+  it("grant and revoke answer 303 with a code, never the email, and the notice shows in the page's entry", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const id = await accountPage(owner.at);
+    const { cookie } = await sessionCookie("user_o");
+    const post = (path: string, email: string) => call(path, { method: "POST", headers: { cookie, origin: ORIGIN }, body: new URLSearchParams({ email }) });
+    const where = (res: Response) => res.headers.get("location");
+    const entry = `/?page=${id}`;
+
+    const granted = await post(`/dash/pages/${id}/grants`, "Ana@Example.com");
+    expect([granted.status, where(granted)]).toEqual([303, `${entry}&done=granted#page-${id}`]);
+    const exists = await post(`/dash/pages/${id}/grants`, "ana@example.com");
+    expect(where(exists)).toBe(`${entry}&done=exists#page-${id}`);
+    const badEmail = await post(`/dash/pages/${id}/grants`, "not an email");
+    expect([badEmail.status, where(badEmail)]).toEqual([303, `${entry}&error=email#page-${id}`]);
+    const revoked = await post(`/dash/pages/${id}/grants/remove`, "ana@example.com");
+    expect(where(revoked)).toBe(`${entry}&done=revoked#page-${id}`);
+    const again = await post(`/dash/pages/${id}/grants/remove`, "ana@example.com");
+    expect(where(again)).toBe(`${entry}&done=revoked#page-${id}`);
+
+    for (let i = 0; i < 100; i++) await env.DB.prepare("INSERT INTO grants (page_id, email, role, created_at) VALUES (?, ?, 'collaborator', ?)").bind(id, `u${i}@example.com`, i).run();
+    const full = await post(`/dash/pages/${id}/grants`, "late@example.com");
+    expect(where(full)).toBe(`${entry}&error=limit#page-${id}`);
+
+    const missing = await post(`/dash/pages/nope/grants`, "ana@example.com");
+    expect([missing.status, where(missing)]).toEqual([303, "/?error=gone"]);
+    await env.DB.prepare("UPDATE pages SET taken_down = 1 WHERE id = ?").bind(id).run();
+    expect(where(await post(`/dash/pages/${id}/grants`, "ana@example.com"))).toBe("/?error=gone");
+
+    const notice = async (query: string) => (await (await call(`/${query}`, { headers: { cookie } })).text()).match(/class="notice[^"]*" id="[^"]*" role="\w+">([^<]*)</)?.[1];
+    await env.DB.prepare("UPDATE pages SET taken_down = 0 WHERE id = ?").bind(id).run();
+    expect(await notice(`?page=${id}&done=granted`)).toBe("Access granted. They open the page after they sign in with that email.");
+    expect(await notice(`?page=${id}&done=exists`)).toBe("That email already has access.");
+    expect(await notice(`?page=${id}&done=revoked`)).toBe("Access revoked. Any tab they have open on this page loses access now.");
+    expect(await notice(`?page=${id}&error=email`)).toBe("Enter an email address, like name@example.com.");
+    expect(await notice(`?page=${id}&error=limit`)).toBe("This page has 100 grants, the most it can have. Revoke one first.");
+    expect(await notice("?error=gone")).toBe("That page expired or was taken down.");
+    // Unknown codes, and a page that is not in the list, show nothing.
+    expect(await notice(`?page=${id}&done=bogus`)).toBeUndefined();
+    expect(await notice(`?page=${id}&error=granted`)).toBeUndefined();
+    expect(await notice("?page=other&done=granted")).toBeUndefined();
+    const bad = await (await call(`/?page=${id}&error=email`, { headers: { cookie } })).text();
+    expect(bad).toContain('aria-invalid="true"');
+  });
+
+  it("signed in: private head (no canonical, Open Graph or JSON-LD), site shell, no old inline styles", async () => {
+    addUser("user_o", "olga@example.com");
+    const res = await call("/", { headers: { cookie: (await sessionCookie("user_o")).cookie } });
+    const html = await res.text();
+    expect(html).toContain("<title>Your pages · austere</title>");
+    expect(html).toContain('<meta name="robots" content="noindex, nofollow">');
+    expect(html).not.toMatch(/rel="canonical"|og:|twitter:|ld\+json/);
+    expect(html).toContain('action="/auth/logout"');
+    expect(res.headers.get("content-security-policy")).toContain("img-src 'self'");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+  });
+
+  it("empty states: no pages shows the login and publish commands; nothing shared shows its text", async () => {
+    addUser("user_o", "olga@example.com");
+    const html = await (await call("/", { headers: { cookie: (await sessionCookie("user_o")).cookie } })).text();
+    expect(html).toContain("No pages yet.");
+    expect(html).toContain("Pages you publish while the CLI is signed in as olga@example.com show up here.");
+    expect(html).toContain("<code>austere-axi cloud login</code>");
+    expect(html).toContain("<code>austere-axi publish &lt;file&gt;</code>");
+    expect(html).toContain("New to austere-axi? Install guide");
+    expect(html).toContain("Nothing shared with you yet. When an owner grants olga@example.com, the page shows up here.");
+  });
+
+  it("shared with you: the owner's name, else email, and the expiry", async () => {
+    const named = await account("user_o", "olga@example.com", "Olga", "Ruiz");
+    const plain = await account("user_p", "pat@example.com");
+    const one = await accountPage(named.at);
+    const two = await accountPage(plain.at);
+    await grantTo(named.at, one, "ana@example.com");
+    await grantTo(plain.at, two, "ana@example.com");
+    await env.DB.prepare("UPDATE pages SET expires_at = ? WHERE id = ?").bind(Date.now() + 30 * 3600_000, one).run();
+    addUser("user_a", "ana@example.com");
+    const html = await (await call("/", { headers: { cookie: (await sessionCookie("user_a")).cookie } })).text();
+    expect(html).toContain("Olga Ruiz");
+    expect(html).toContain("pat@example.com");
+    expect(html).toContain('<time class="soon"');
+    expect(html).toContain("Expires in 2 days");
+  });
+
+  it("each owned page's register lists only its own grants", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const one = await accountPage(owner.at);
+    const two = await accountPage(owner.at);
+    await grantTo(owner.at, one, "ana@example.com");
+    await grantTo(owner.at, two, "bo@example.com");
+    const html = await (await call("/", { headers: { cookie: (await sessionCookie("user_o")).cookie } })).text();
+    const entry = (id: string) => html.slice(html.indexOf(`id="page-${id}"`), html.indexOf("</article>", html.indexOf(`id="page-${id}"`)));
+    expect(entry(one)).toContain("ana@example.com");
+    expect(entry(one)).not.toContain("bo@example.com");
+    expect(entry(two)).toContain("bo@example.com");
+    expect(entry(two)).toContain("Revoke access for bo@example.com");
+  });
+
   it("a page deleted by its owner takes its grants with it", async () => {
     const owner = await account("user_o", "olga@example.com");
     const id = await createPage(owner.at);

@@ -36,6 +36,13 @@ export interface Meta {
   jsonLd?: unknown;
 }
 
+/** Head lines every document shares: color scheme, theme color for both schemes, icons. */
+const HEAD_CHROME = `<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F3F5F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0D2741" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">`;
+
 function head(m: Meta): string {
   const url = ORIGIN + m.path;
   const image = `${ORIGIN}/og.png`;
@@ -44,11 +51,7 @@ function head(m: Meta): string {
 <title>${esc(m.title)}</title>
 <meta name="description" content="${esc(m.description)}">
 <link rel="canonical" href="${url}">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#F3F5F7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0D2741" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+${HEAD_CHROME}
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="austere">
 <meta property="og:title" content="${esc(m.ogTitle)}">
@@ -79,6 +82,23 @@ ${signIn ? `<a class="btn ghost sm" href="${esc(signIn)}">Sign In</a>` : ""}
 </div></header>`;
 }
 
+/** The private pages' nav: no How It Works; the account's email and Sign Out when signed in. */
+function privateNav(account: { email: string } | null): string {
+  return `<header class="nav"><div class="wrap nav-in priv">
+<a class="logo" href="/" aria-label="austere cloud, home">austere<small>cloud</small></a>
+<nav aria-label="Main"><ul>
+<li><a href="${INSTALL_GUIDE}">Docs</a></li>
+<li><a href="/security">Security</a></li>
+<li><a href="${REPO}">GitHub</a></li>
+</ul></nav>${
+    account
+      ? `
+<div class="acct"><span class="acct-email">${esc(account.email)}</span><form method="post" action="/auth/logout"><button class="btn ghost sm">Sign Out</button></form></div>`
+      : ""
+  }
+</div></header>`;
+}
+
 function footer(): string {
   return `<footer class="foot"><div class="wrap"><div class="tb">
 <div class="tb-c tb-brand"><span class="logo">austere</span></div>
@@ -98,6 +118,29 @@ ${head(m)}
 </head><body>
 <a class="skip" href="#main">Skip to content</a>
 ${nav(signIn)}
+<main id="main">
+${body}
+</main>
+${footer()}
+</body></html>`;
+}
+
+/**
+ * A signed-in or error page: the same shell, but private. noindex, no canonical, no Open Graph,
+ * no JSON-LD. Pair it with `privateHeaders`.
+ */
+export function privateDocument(title: string, account: { email: string } | null, body: string): string {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)}</title>
+<meta name="robots" content="noindex, nofollow">
+${HEAD_CHROME}
+<style>${CSS}</style>
+</head><body>
+<a class="skip" href="#main">Skip to content</a>
+${privateNav(account)}
 <main id="main">
 ${body}
 </main>
@@ -365,6 +408,68 @@ mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0)}
 .limits thead th{background:var(--color-panel);font-size:var(--text-label);letter-spacing:var(--tracking-label);text-transform:uppercase;color:var(--color-muted);border-top:0}
 .limits tbody th{font-weight:600;width:35%}
 .notyet{border:var(--rule-heavy) solid var(--color-ink)!important;padding:var(--space-5)!important;background:var(--color-sheet)}
+
+/* dashboard (signed-in /): the drawing register */
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.nav-in.priv nav{order:3;flex-basis:100%;margin-left:0}
+.acct{order:2;margin-left:auto;display:flex;align-items:center;gap:var(--space-4)}
+.acct-email{display:none;font-size:var(--text-small);overflow-wrap:anywhere}
+.acct form{margin:0}
+@media (max-width:639px){.nav-in.priv li a{min-height:44px;display:inline-flex;align-items:center;padding:0}.nav-in.priv .btn{min-height:44px}}
+@media (min-width:640px){.nav-in.priv nav{order:1;flex-basis:auto;margin-left:auto}.acct{margin-left:0}.acct-email{display:inline}}
+.dash{padding:var(--space-7) 0 var(--space-8)}
+.dash-in{display:grid;gap:var(--space-7);grid-template-columns:minmax(0,1fr)}
+@media (min-width:1100px){.dash-in{grid-template-columns:minmax(0,8fr) minmax(0,4fr);gap:var(--space-6);align-items:start}}
+.dash h1{font-size:var(--text-h2);max-width:none}
+.dash h2{font-size:clamp(1.75rem,1.3rem + 1.4vw,2.5rem);max-width:none}
+.dash-head{display:grid;gap:var(--space-2);margin-bottom:var(--space-5)}
+.dash-list{display:grid;gap:var(--space-5)}
+.entry{background:var(--color-sheet);border:var(--rule-ink) solid var(--color-ink);min-width:0;overflow-wrap:anywhere}
+.entry-head{display:grid;gap:var(--space-2);padding:var(--space-4);border-bottom:var(--rule-heavy) solid var(--color-ink)}
+.entry-head h3 a{text-decoration-thickness:1px}
+.entry-meta{display:flex;flex-wrap:wrap;gap:var(--space-1) var(--space-4);font-size:var(--text-label);font-weight:600;letter-spacing:var(--tracking-label);text-transform:uppercase;color:var(--color-muted)}
+.soon{color:var(--color-markup-strong);font-weight:600}
+.url{font:500 .875rem/1.5 var(--font-mono);overflow-x:auto;white-space:nowrap;user-select:all;-webkit-user-select:all;max-width:100%;padding:var(--space-1) 0}
+.untitled{color:var(--color-muted)}
+.notice{margin:0;padding:var(--space-3) var(--space-4);border-bottom:var(--rule-hair) solid var(--color-ink);font-size:var(--text-small);font-weight:600}
+.notice.err{color:var(--color-markup-strong);border-left:var(--rule-heavy) solid var(--color-markup)}
+.notice.top{border:var(--rule-ink) solid var(--color-ink);border-left:var(--rule-heavy) solid var(--color-markup);background:var(--color-sheet);margin-bottom:var(--space-5)}
+.acl{width:100%;border-collapse:collapse;font-size:var(--text-small)}
+.acl th,.acl td{text-align:left;padding:var(--space-2) var(--space-4);border-top:var(--rule-hair) solid var(--color-ink);vertical-align:middle;overflow-wrap:anywhere}
+.acl thead th{border-top:0;background:var(--color-panel);font-size:var(--text-label);letter-spacing:var(--tracking-label);text-transform:uppercase;color:var(--color-muted);font-weight:600}
+.acl tbody th{font-weight:400}
+.acl :is(td,th):nth-child(2){white-space:nowrap}
+.acl .act{text-align:right;white-space:nowrap;width:1%}
+.acl .act form{margin:0}
+.acl .none{color:var(--color-muted)}
+.acl-note{padding:var(--space-2) var(--space-4) var(--space-3);font-size:var(--text-small);color:var(--color-muted);border-top:var(--rule-hair) solid var(--color-ink)}
+.grant{display:grid;gap:var(--space-2);padding:var(--space-4);border-top:var(--rule-heavy) solid var(--color-ink)}
+.grant label{font-weight:650}
+.grant-row{display:flex;gap:var(--space-3);flex-wrap:wrap}
+.field{flex:1 1 14rem;min-width:0;min-height:var(--btn-h);padding:0 var(--space-3);font:1rem/1.5 var(--font-body);color:var(--color-ink);background:var(--color-sheet);border:var(--rule-ink) solid var(--color-ink);border-radius:0}
+.field[aria-invalid=true]{border:2px solid var(--color-markup)}
+.field:focus-visible{outline:var(--focus-ring);outline-offset:var(--focus-offset)}
+.help{font-size:var(--text-small);color:var(--color-muted)}
+.shared{display:grid;gap:0;border:var(--rule-ink) solid var(--color-ink);background:var(--color-sheet)}
+.shared li{padding:var(--space-3) var(--space-4);border-top:var(--rule-hair) solid var(--color-ink);display:grid;gap:2px;overflow-wrap:anywhere;min-width:0}
+.shared li:first-child{border-top:0}
+.shared .meta{font-size:var(--text-small);color:var(--color-muted)}
+.shared-empty{border:var(--rule-ink) solid var(--color-ink);background:var(--color-sheet);padding:var(--space-4);overflow-wrap:anywhere}
+.dash-side{display:grid;gap:var(--space-4);min-width:0}
+.dash-empty{display:grid;gap:var(--space-4);justify-items:start;border:var(--rule-ink) solid var(--color-ink);background:var(--color-sheet);padding:var(--space-5);min-width:0;overflow-wrap:anywhere}
+.dash-empty .cmd{width:100%}
+.dash-empty h3{font-size:var(--text-h3)}
+@media (max-width:639px){
+.acl .btn.sm,.grant .btn{min-height:44px}
+.acl th,.acl td{display:block;width:auto;text-align:left;padding:var(--space-1) var(--space-4)}
+.acl thead{display:none}
+.acl tr{display:block;padding:var(--space-2) 0;border-top:var(--rule-hair) solid var(--color-ink)}
+.acl tbody tr:first-child{border-top:0}
+.acl th,.acl td{border-top:0}
+.acl .act{text-align:left;width:auto;padding-top:var(--space-2)}
+.grant-row{display:grid;grid-template-columns:minmax(0,1fr)}
+.field{min-height:44px}
+.grant .btn{width:100%}}
 
 /* one load sequence on the hero sheet, then the page stays still */
 @media (prefers-reduced-motion:no-preference){
