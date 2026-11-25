@@ -21,6 +21,6 @@
     "wrangler": "^4.158.0"
   },
   "dependencies": {
-    "austere-axi": "^0.10.0"
+    "austere-axi": "^0.25.0"
   }
 }

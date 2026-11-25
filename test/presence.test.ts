@@ -1,3 +1,4 @@
+import { SYNC_VERSION } from "austere-axi/sync";
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { PresenceStatus, ReceivedFrame, ViewerBye, ViewerFocus, ViewerHello, ViewerStatus } from "austere-axi/sync";
@@ -43,7 +44,7 @@ describe("roster", () => {
     const { token, id } = await page();
     const ana = await reviewerSocket(id);
     const [anaSelf] = await join(ana, "  Ana  ");
-    expect(anaSelf).toMatchObject({ v: 1, t: "hello", self: true, status: "viewing", focus: null, viewer: { name: "Ana", role: "reviewer" } });
+    expect(anaSelf).toMatchObject({ v: SYNC_VERSION, t: "hello", self: true, status: "viewing", focus: null, viewer: { name: "Ana", role: "reviewer" } });
     expect(anaSelf.viewer.colour).toMatch(/^#[0-9a-f]{6}$/);
 
     const owner = await ownerSocket(token, id);
@@ -75,11 +76,11 @@ describe("roster", () => {
     await settle(b);
     b.frames.length = 0;
     b.sendRaw({ v: 1, t: "bye" });
-    expect(await a.take(isBye)).toEqual({ v: 1, t: "bye", viewer: bId });
-    expect(await c.take(isBye)).toEqual({ v: 1, t: "bye", viewer: bId });
+    expect(await a.take(isBye)).toEqual({ v: SYNC_VERSION, t: "bye", viewer: bId });
+    expect(await c.take(isBye)).toEqual({ v: SYNC_VERSION, t: "bye", viewer: bId });
 
     c.close();
-    expect(await a.take(isBye)).toEqual({ v: 1, t: "bye", viewer: cId });
+    expect(await a.take(isBye)).toEqual({ v: SYNC_VERSION, t: "bye", viewer: cId });
 
     // B left the roster: a newcomer does not see it, and B gets no more presence.
     const d = await reviewerSocket(id);
@@ -138,12 +139,12 @@ describe("status and focus", () => {
     await a.take(isHello);
 
     a.sendRaw({ v: 1, t: "focus", statement: "intro" });
-    expect(await b.take((f): f is ViewerFocus => f.t === "focus")).toEqual({ v: 1, t: "focus", viewer: aId, statement: "intro" });
+    expect(await b.take((f): f is ViewerFocus => f.t === "focus")).toEqual({ v: SYNC_VERSION, t: "focus", viewer: aId, statement: "intro" });
     const c = await reviewerSocket(id);
     expect((await join(c, "C")).find((h) => h.viewer.id === aId)!.focus).toBe("intro");
 
     a.sendRaw({ v: 1, t: "focus", statement: null });
-    expect(await b.take((f): f is ViewerFocus => f.t === "focus")).toEqual({ v: 1, t: "focus", viewer: aId, statement: null });
+    expect(await b.take((f): f is ViewerFocus => f.t === "focus")).toEqual({ v: SYNC_VERSION, t: "focus", viewer: aId, statement: null });
     expect(await c.take((f): f is ViewerFocus => f.t === "focus")).toMatchObject({ viewer: aId, statement: null });
     await settle(a);
     expect(a.frames.filter((f) => f.t === "focus")).toEqual([]); // not echoed to the sender
@@ -194,7 +195,7 @@ describe("expiry", () => {
       }
     });
     expect(await runDurableObjectAlarm(stub(id))).toBe(true);
-    expect(await b.take(isBye)).toEqual({ v: 1, t: "bye", viewer: aId });
+    expect(await b.take(isBye)).toEqual({ v: SYNC_VERSION, t: "bye", viewer: aId });
 
     // A newcomer does not see A; A's heartbeat announces it again, with the same id.
     const c = await reviewerSocket(id);
@@ -216,7 +217,7 @@ describe("invites", () => {
     const ownerRoster = await join(owner);
     expect(ownerRoster.map((h) => h.viewer.name)).toEqual(["Ana", "Owner"]);
     await owner.mutate("revoke", { name: "Ana" });
-    expect(await owner.take(isBye)).toEqual({ v: 1, t: "bye", viewer: self.viewer.id });
+    expect(await owner.take(isBye)).toEqual({ v: SYNC_VERSION, t: "bye", viewer: self.viewer.id });
   });
 
   it("one alarm serves both: an invite expiring before the viewer timeout fires first, presence re-arms after", async () => {
