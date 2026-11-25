@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { PRE_ACCOUNT } from "../src/auth";
-import { CLI, PAGE_HTML, artifact, call, createPage, gzip, invite, newOwner, ownerSocket, publish, publishArgs, putObject, sha256Hex } from "./helpers";
+import type { PublishArgs } from "austere-axi/sync";
+import { CLI, PAGE_HTML, artifact, call, createPage, gzip, invite, newOwner, ownerSocket, publish, publishArgs, putObject, reviewerSocket, sha256Hex } from "./helpers";
 
 const row = (id: string) => env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first<Record<string, number | string | null>>();
 const objectKeys = async () => (await env.PAGES.list({ prefix: "objects/" })).objects.map((o) => o.key).sort();
@@ -73,6 +74,48 @@ describe("publish lifecycle", () => {
     expect((await call(`/api/pages/${id}/notes?after=0`, { token })).status).toBe(404);
     expect((await call(`/p/${id}/conversation`)).status).toBe(404);
     expect((await call(`/p/${id}/send`, { method: "POST", json: {} })).status).toBe(404);
+  });
+});
+
+describe("publish placement (sync v2: project, relPath)", () => {
+  // The args type is austere-axi 0.10's, which predates the fields: the parser keeps them as unknown fields.
+  const placed = (project: unknown, relPath: unknown) => ({ project, relPath }) as Partial<PublishArgs>;
+
+  it("stores project and rel_path in D1, and a v1 publish keeps them", async () => {
+    const token = await newOwner();
+    const { id } = await publish(token, { args: placed("shop", "docs/plan.html") });
+    expect(await row(id)).toMatchObject({ project: "shop", rel_path: "docs/plan.html" });
+    // Neither field: the stored values stay.
+    expect((await publish(token, { id, args: { title: "Plan v2" } })).ack.error).toBeUndefined();
+    expect(await row(id)).toMatchObject({ title: "Plan v2", project: "shop", rel_path: "docs/plan.html" });
+    // New values replace them.
+    await publish(token, { id, args: placed("shop-2", "plan.html") });
+    expect(await row(id)).toMatchObject({ project: "shop-2", rel_path: "plan.html" });
+    // A half pair, or a wrong type, is ignored.
+    await publish(token, { id, args: placed("only-project", undefined) });
+    await publish(token, { id, args: placed(42, ["x"]) });
+    expect(await row(id)).toMatchObject({ project: "shop-2", rel_path: "plan.html" });
+  });
+
+  it("a page published without them has none; long values are cut", async () => {
+    const token = await newOwner();
+    const { id } = await publish(token);
+    expect(await row(id)).toMatchObject({ project: null, rel_path: null });
+    await publish(token, { id, args: placed("p".repeat(500), "r/".repeat(900)) });
+    const r = (await row(id))!;
+    expect([String(r.project).length, String(r.rel_path).length]).toEqual([200, 1000]);
+  });
+
+  it("they stay in D1: not in the page row reviewers and the owner pull", async () => {
+    const token = await newOwner();
+    const { id } = await publish(token, { args: placed("shop", "docs/plan.html") });
+    const owner = await ownerSocket(token, id);
+    const frames = await owner.pull(0);
+    const rows = frames.flatMap((f) => f.rows);
+    expect(rows.some((r) => r.type === "page")).toBe(true);
+    expect(JSON.stringify(rows)).not.toMatch(/shop|plan\.html|relPath|rel_path|"project"/);
+    const reviewer = await reviewerSocket(id, { invite: await invite(token, id) });
+    expect(JSON.stringify(await reviewer.pull(0))).not.toMatch(/shop|plan\.html|relPath|rel_path|"project"/);
   });
 });
 

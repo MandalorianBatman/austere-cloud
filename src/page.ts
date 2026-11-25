@@ -94,6 +94,21 @@ const fail = (code: ErrorCode, message: string, retryAfter?: number): Outcome =>
 /** A row as written: the server sets `v` and `seq`. */
 type RowInput = Row extends infer R ? (R extends Row ? Omit<R, "v" | "seq"> : never) : never;
 
+/** Longest `project` name and `relPath` kept. */
+const MAX_PROJECT = 200;
+const MAX_REL_PATH = 1000;
+
+/**
+ * The sync v2 fields of a `publish`, which the parser keeps as unknown fields: a non-empty string, cut to length, else
+ * null (not sent, or not usable). Both or neither: a path with no project would not say where the page belongs.
+ */
+function placement(args: object): { project: string | null; relPath: string | null } {
+  const { project, relPath } = args as { project?: unknown; relPath?: unknown };
+  const p = typeof project === "string" ? project.trim().slice(0, MAX_PROJECT) : "";
+  const r = typeof relPath === "string" ? relPath.trim().slice(0, MAX_REL_PATH) : "";
+  return p && r ? { project: p, relPath: r } : { project: null, relPath: null };
+}
+
 export class PageObject extends DurableObject<Env> {
   private readonly sql: SqlStorage;
   /** Mutations run one at a time, including their awaits on D1 and R2. */
@@ -484,8 +499,13 @@ export class PageObject extends DurableObject<Env> {
       deleted: false,
     } as const;
     // The D1 index first: should the commit below not happen, the client re-sends and this repeats.
-    await this.env.DB.prepare("UPDATE pages SET title = ?, cli_version = ?, html = ?, auto = ?, bytes = ?, published_at = ?, expires_at = ? WHERE id = ?")
-      .bind(page.title, page.cliVersion, page.html, page.auto ? 1 : 0, bytes, now, page.expiresAt, id)
+    // `project` and `rel_path` (sync v2) live here only, never in the `page` row reviewers get. A publish that sends
+    // neither (an older CLI, or one that could not place the file) keeps what is stored: COALESCE.
+    const placed = placement(args);
+    await this.env.DB.prepare(
+      "UPDATE pages SET title = ?, cli_version = ?, html = ?, auto = ?, bytes = ?, published_at = ?, expires_at = ?, project = COALESCE(?, project), rel_path = COALESCE(?, rel_path) WHERE id = ?",
+    )
+      .bind(page.title, page.cliVersion, page.html, page.auto ? 1 : 0, bytes, now, page.expiresAt, placed.project, placed.relPath, id)
       .run();
     await setPageObjects(this.env, id, [args.html, ...packs.map((p) => p.sha256)]);
     return {
