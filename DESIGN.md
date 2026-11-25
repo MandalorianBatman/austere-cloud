@@ -75,7 +75,7 @@ Retired: the cyanotype (Prussian blue) dark palette and its `prefers-color-schem
 - **Theme toggle `.theme`:** a two-cell ruled segment, "Dark | Light", 40 px (44 px below 640 px). The current cell is filled with `--color-action`; the other is muted and takes a panel fill on hover. Border is `--color-line-control`.
 - **Buttons:** 48 px, square. Primary = solid ink; ghost = 1.5 px ink border. Hover changes background only. Red is never a fill.
 - **Command block `cmd()`:** sheet fill, 1.5 px ink border, mono. The prompt (`$`, `›`) is `user-select:none`; the command is `user-select:all`. Scrolls horizontally instead of wrapping, so 375 px never breaks `austere-axi` at the hyphen.
-- **Active target `.row.active`:** uses the app's accent outline and background tint, matching the review experience in austere-axi.
+- **Active target `.row.active`:** the app's pick outline from austere-axi `austere.css` (`.austere-hover`, locked): 1.5 px `#8FB0FF`, fill `rgba(143,176,255,.10)`, 4 px halo `rgba(143,176,255,.12)`, radius 8 px. No cloud, no glow. Send uses `--p-app-accent-ink` (#0D1220) on the accent.
 - **Delta mark `.delta`:** inline SVG triangle, 2 px stroke in markup red, number in display type. Numbers the three outcomes.
 - **Sample sheet:** product mock inside a ruled sheet with `role="img"` and an `aria-label`; contents are `aria-hidden`. Register table below it (ISSUED TO, LINK, STATUS), LINK column hidden under 640 px. `Revoked` is red with a 2 px strikethrough.
 - **HELD tag:** label type on `--color-held`. SENT is plain muted text. State is never color alone.

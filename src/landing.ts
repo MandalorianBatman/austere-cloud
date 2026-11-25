@@ -2,7 +2,7 @@
 // Static HTML and CSS only: the CSP allows no script and no fetch; the only asset is the same-origin favicon.
 
 import type { Theme } from "./theme";
-import { INSTALL_GUIDE, ORIGIN, CLOUD_REPO, REPO, cmd, document, pageHeaders, type Meta } from "./site";
+import { INSTALL_GUIDE, ORIGIN, REPO, cmd, document, pageHeaders, type Meta } from "./site";
 
 const TITLE = "Share AI coding agent plans for team review · austere";
 const DESCRIPTION =
@@ -27,7 +27,6 @@ export const LANDING_META: Meta = {
         applicationCategory: "DeveloperApplication",
         operatingSystem: "Any",
         softwareRequirements: "Node.js 22.18 or later",
-        license: "https://opensource.org/license/mit",
         sameAs: [REPO, "https://www.npmjs.com/package/austere-axi"],
       },
     ],
@@ -80,7 +79,7 @@ function body(signIn: string | null): string {
 <p class="lede">Your coding agent publishes its plan, design or report as a private page. Each reviewer gets a link with their name on it and leaves notes on the exact part they mean. You choose which notes reach the agent.</p>
 ${cmd("npm install -g austere-axi")}
 <div class="cta-row"><a class="btn primary" href="#start">Get started</a><a href="${INSTALL_GUIDE}">Read the install guide</a></div>
-<p class="facts">Works with Claude Code, Codex and Cursor · Open source CLI · Free for limited time</p>
+<p class="facts">Works with Claude Code, Codex and Cursor · Open source CLI · Cloud free for a limited time</p>
 </div>
 ${SHEET}
 </div>
@@ -173,7 +172,7 @@ Ben  ${ORIGIN}/p/k3v9qz#i=…</pre></div>
 <li>The service stores invite tokens, sessions and sign-in codes only as SHA-256 hashes</li>
 <li>A page stops being served 30 days after your last publish. <code>austere-axi publish rm</code> takes it down now</li>
 <li>The <code>austere-axi</code> CLI is open source under the MIT license</li>
-<li>austere cloud is a hosted offering, free for a limited time while we onboard early users</li>
+<li>austere cloud is a hosted offering, free for a limited time because we don’t have users yet</li>
 </ul>
 </div>
 </section>
@@ -181,7 +180,7 @@ Ben  ${ORIGIN}/p/k3v9qz#i=…</pre></div>
 <section class="sec rule-top" id="pricing" aria-labelledby="pricing-h">
 <div class="wrap split">
 <div><p class="label">Pricing</p><h2 id="pricing-h">Free for a limited time</h2></div>
-<p class="lede">austere cloud will be a paid service. It is completely free for a limited time because we don’t have users yet. The <code>austere-axi</code> CLI is and remains free and open source under the MIT license.</p>
+<p class="lede">austere cloud will be a paid service. It is completely free for a limited time because we don’t have users yet. The <code>austere-axi</code> CLI is free and open source under the MIT license.</p>
 </div>
 </section>
 
@@ -191,7 +190,7 @@ Ben  ${ORIGIN}/p/k3v9qz#i=…</pre></div>
 <div class="faq">
 <details><summary>Which agents does it work with?</summary><p>Claude Code, Codex and Cursor. Claude Desktop works through the MCP server. The install guide covers each one.</p></details>
 <details><summary>Do I need an account?</summary><p>Not for local review. To publish, you sign in once on each machine with <code>austere-axi cloud login</code>. Reviewers with an invite link don’t need an account.</p></details>
-<details><summary>How much does austere cloud cost?</summary><p>austere cloud will be a paid service, but it is free for a limited time because we don’t have users yet. The CLI (<code>austere-axi</code>) is and remains free and open source under MIT.</p></details>
+<details><summary>How much does austere cloud cost?</summary><p>austere cloud will be a paid service, but it is free for a limited time because we don’t have users yet. The CLI (<code>austere-axi</code>) is free and open source under MIT.</p></details>
 <details><summary>Is austere cloud open source?</summary><p>Only the CLI (<code>austere-axi</code>) is open source under the MIT license. The cloud service is a proprietary hosted offering.</p></details>
 <details><summary>Who can read a published page?</summary><p>You, the people you invite, and the email addresses you grant. A page published with <code>--unlisted</code> is the exception: anyone with its address can read it and leave notes.</p></details>
 <details><summary>How long does a page stay up?</summary><p>For 30 days after your last publish. Each publish starts the 30 days again. To take a page down now, run <code>austere-axi publish rm</code>.</p></details>
