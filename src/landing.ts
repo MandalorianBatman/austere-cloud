@@ -132,7 +132,7 @@ Ben  ${ORIGIN}/p/k3v9qz#i=…</pre></div>
 <h3>Also on every hosted page</h3>
 <ul class="feat">
 <li><b>See who’s reading</b><span>Chips show who is on the page and whether they’re viewing, away or writing. Turn this off with <code>--no-presence</code>.</span></li>
-<li><b>Grant access by email</b><span>From your dashboard, grant a page to an email address. That person signs in with an email code, Google, GitHub or a passkey.</span></li>
+<li><b>Grant access by email</b><span>From your hub, grant a page to an email address. That person signs in with an email code, Google, GitHub or a passkey.</span></li>
 <li><b>Pick up on another machine</b><span><code>austere-axi clone</code> gets your hosted pages on any machine you sign in on, and their notes sync there.</span></li>
 <li><b>Keep a copy</b><span><b>Download standalone HTML</b> saves the page as one file that opens in any browser, offline.</span></li>
 </ul>
@@ -207,7 +207,7 @@ ${cmd("npm install -g austere-axi")}
 /** The landing page; `signIn` is the sign-in URL when accounts are on, else null. */
 export function landing(signIn: string | null, theme: Theme): Response {
   return new Response(document(LANDING_META, signIn, theme, body(signIn)), {
-    // `/` is the dashboard once signed in, so it is never cached.
+    // `/` is the hub once signed in, so it is never cached.
     headers: pageHeaders("no-store"),
   });
 }

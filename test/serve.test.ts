@@ -130,10 +130,14 @@ describe("/rt/<version>/<asset> proxy", () => {
     expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
     await call("/rt/1.0.1/chrome/chrome.js");
     await call("/rt/1.0.1/packs/shadcn.js");
+    expect((await call("/rt/1.0.1/chrome/shell.css")).headers.get("content-type")).toBe("text/css; charset=utf-8");
+    await call("/rt/1.0.1/chrome/shell.js");
     expect(spy.mock.calls.map(([u]) => String(u).replace("https://cdn.jsdelivr.net/npm/austere-axi@1.0.1/dist/", ""))).toEqual([
       "chrome/chrome.css",
       "chrome/chrome.js",
       "packs/shadcn/pack.js",
+      "chrome/shell.css",
+      "chrome/shell.js",
     ]);
   });
 

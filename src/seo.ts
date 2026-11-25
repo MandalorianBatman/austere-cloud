@@ -9,7 +9,7 @@ Allow: /
 Disallow: /p/
 Disallow: /api/
 Disallow: /auth/
-Disallow: /dash/
+Disallow: /hub/
 Disallow: /rt/
 Disallow: /pk/
 Sitemap: ${ORIGIN}/sitemap.xml

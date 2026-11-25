@@ -103,7 +103,7 @@ export async function listGrants(env: Env, pageId: string): Promise<Grant[]> {
 /** Most grants one page may hold. */
 export const MAX_GRANTS = 100;
 
-/** The page already holds `MAX_GRANTS` grants. A 400 on the API; the dashboard shows its own notice. */
+/** The page already holds `MAX_GRANTS` grants. A 400 on the API; the hub shows its own text for it. */
 export class GrantLimitError extends HttpError {
   constructor() {
     super(400, `a page may have at most ${MAX_GRANTS} grants`);

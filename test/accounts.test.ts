@@ -1,9 +1,10 @@
 // Accounts (RLM-414): WorkOS access tokens verified against the JWKS, the CLI's bearer access
 // token, the end of anonymous owners (RLM-434), per-page grants, the browser session cookie and its
-// refresh rotation, /auth/* and the dashboard. WorkOS is the stub in test/workos.ts.
+// refresh rotation, /auth/* and the hub. WorkOS is the stub in test/workos.ts.
 import { env } from "cloudflare:workers";
 import type { NoteRow, ReceivedFrame } from "austere-axi/sync";
 import { describe, expect, it } from "vitest";
+import type { PublishArgs } from "austere-axi/sync";
 import { verifyAccessToken } from "../src/jwt";
 import { SESSION_COOKIE, STATE_COOKIE, unseal, type SessionData } from "../src/session";
 import { ORIGIN, assetToken, call, createPage, newOwner, open, ownerSocket, publish, reviewerSocket, sha256Hex } from "./helpers";
@@ -366,165 +367,174 @@ describe("/auth/*", () => {
   });
 });
 
-describe("dashboard", () => {
-  it("signed out: a sign-in link; signed in: my pages, their grants, and pages shared with me", async () => {
+describe("the hub (signed-in /)", () => {
+  const as = async (userId: string) => (await sessionCookie(userId)).cookie;
+  const get = async (path: string, cookie: string) => (await call(path, { headers: { cookie } })).json() as Promise<any>;
+  const post = (path: string, cookie: string, body: unknown, origin: string | null = ORIGIN) =>
+    call(path, { method: "POST", headers: { cookie, ...(origin ? { origin } : {}), "content-type": "application/json" }, body: JSON.stringify(body) });
+  const placed = (project: string, relPath: string) => ({ args: { project, relPath } as Partial<PublishArgs> });
+
+  it("signed out: the landing page with a sign-in link; signed in: the hub shell from the pinned runtime", async () => {
     expect(await (await call("/")).text()).toContain('href="/auth/login?return_to=%2F"');
-    const owner = await account("user_o", "olga@example.com", "Olga");
-    const id = await accountPage(owner.at);
-    const { cookie } = await sessionCookie("user_o");
-
-    const add = await call(`/dash/pages/${id}/grants`, { method: "POST", headers: { cookie, origin: ORIGIN }, body: new URLSearchParams({ email: "ana@example.com" }) });
-    expect(add.status).toBe(303);
-    const foreign = await call(`/dash/pages/${id}/grants`, { method: "POST", headers: { cookie, origin: "https://evil.test" }, body: new URLSearchParams({ email: "eve@example.com" }) });
-    expect(foreign.status).toBe(403);
-
-    const res = await call("/", { headers: { cookie } });
+    addUser("user_o", "olga@example.com", "Olga", "Ruiz");
+    const res = await call("/", { headers: { cookie: await as("user_o") } });
     const html = await res.text();
-    expect(res.headers.get("content-security-policy")).toContain("form-action 'self' https://workos.test");
-    expect(html).toContain("olga@example.com");
-    expect(html).toContain(`href="/p/${id}"`);
-    expect(html).toContain("ana@example.com");
-    expect(html).not.toContain("eve@example.com");
-
-    addUser("user_a", "ana@example.com", "Ana");
-    const shared = await (await call("/", { headers: { cookie: (await sessionCookie("user_a")).cookie } })).text();
-    expect(shared).toContain("Shared with you");
-    expect(shared).toContain(`href="/p/${id}"`);
-
-    const rm = await call(`/dash/pages/${id}/grants/remove`, { method: "POST", headers: { cookie, origin: ORIGIN }, body: new URLSearchParams({ email: "ana@example.com" }) });
-    expect(rm.status).toBe(303);
-    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM grants").first<{ n: number }>())!.n).toBe(0);
-  });
-
-  it("grant and revoke answer 303 with a code, never the email, and the notice shows in the page's entry", async () => {
-    const owner = await account("user_o", "olga@example.com");
-    const id = await accountPage(owner.at);
-    const { cookie } = await sessionCookie("user_o");
-    // The Origin a browser sends on a same-origin form POST depends on the policy the form's page
-    // sent: under no-referrer it is "null" (Fetch spec). Read the policy from the real page.
-    const policy = (await call("/", { headers: { cookie } })).headers.get("referrer-policy");
-    expect(policy).toBe("same-origin");
-    const browserOrigin = policy === "no-referrer" ? "null" : ORIGIN;
-    const post = (path: string, email: string) =>
-      call(path, { method: "POST", headers: { cookie, origin: browserOrigin, "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate" }, body: new URLSearchParams({ email }) });
-    const where = (res: Response) => res.headers.get("location");
-    const entry = `/?page=${id}`;
-
-    const granted = await post(`/dash/pages/${id}/grants`, "Ana@Example.com");
-    expect([granted.status, where(granted)]).toEqual([303, `${entry}&done=granted#page-${id}`]);
-    const exists = await post(`/dash/pages/${id}/grants`, "ana@example.com");
-    expect(where(exists)).toBe(`${entry}&done=exists#page-${id}`);
-    const badEmail = await post(`/dash/pages/${id}/grants`, "not an email");
-    expect([badEmail.status, where(badEmail)]).toEqual([303, `${entry}&error=email#page-${id}`]);
-    const revoked = await post(`/dash/pages/${id}/grants/remove`, "ana@example.com");
-    expect(where(revoked)).toBe(`${entry}&done=revoked#page-${id}`);
-    const again = await post(`/dash/pages/${id}/grants/remove`, "ana@example.com");
-    expect(where(again)).toBe(`${entry}&done=revoked#page-${id}`);
-
-    for (let i = 0; i < 100; i++) await env.DB.prepare("INSERT INTO grants (page_id, email, role, created_at) VALUES (?, ?, 'collaborator', ?)").bind(id, `u${i}@example.com`, i).run();
-    const full = await post(`/dash/pages/${id}/grants`, "late@example.com");
-    expect(where(full)).toBe(`${entry}&error=limit#page-${id}`);
-
-    const missing = await post(`/dash/pages/nope/grants`, "ana@example.com");
-    expect([missing.status, where(missing)]).toEqual([303, "/?error=gone"]);
-    await env.DB.prepare("UPDATE pages SET taken_down = 1 WHERE id = ?").bind(id).run();
-    expect(where(await post(`/dash/pages/${id}/grants`, "ana@example.com"))).toBe("/?error=gone");
-
-    const notice = async (query: string) => (await (await call(`/${query}`, { headers: { cookie } })).text()).match(/class="notice[^"]*" id="[^"]*" role="\w+">([^<]*)</)?.[1];
-    await env.DB.prepare("UPDATE pages SET taken_down = 0 WHERE id = ?").bind(id).run();
-    expect(await notice(`?page=${id}&done=granted`)).toBe("Access granted. They open the page after they sign in with that email.");
-    expect(await notice(`?page=${id}&done=exists`)).toBe("That email already has access.");
-    expect(await notice(`?page=${id}&done=revoked`)).toBe("Access revoked. Any tab they have open on this page loses access now.");
-    expect(await notice(`?page=${id}&error=email`)).toBe("Enter an email address, like name@example.com.");
-    expect(await notice(`?page=${id}&error=limit`)).toBe("This page has 100 grants, the most it can have. Revoke one first.");
-    expect(await notice("?error=gone")).toBe("That page expired or was taken down.");
-    // Unknown codes, and a page that is not in the list, show nothing.
-    expect(await notice(`?page=${id}&done=bogus`)).toBeUndefined();
-    expect(await notice(`?page=${id}&error=granted`)).toBeUndefined();
-    expect(await notice("?page=other&done=granted")).toBeUndefined();
-    const bad = await (await call(`/?page=${id}&error=email`, { headers: { cookie } })).text();
-    expect(bad).toContain('aria-invalid="true"');
-  });
-
-  it("signed in: dark by default; the theme cookie renders light; the toggle returns to /", async () => {
-    addUser("user_o", "olga@example.com");
-    const { cookie } = await sessionCookie("user_o");
-    const dark = await (await call("/", { headers: { cookie } })).text();
-    expect(dark).toContain('<html lang="en" data-theme="dark">');
-    expect(dark).toContain('aria-label="Switch to light theme"');
-    expect(dark).toContain('<input type="hidden" name="return_to" value="/">');
-    const light = await (await call("/", { headers: { cookie: `${cookie}; austere_theme=light` } })).text();
-    expect(light).toContain('<html lang="en" data-theme="light">');
-    expect(light).toContain('<meta name="theme-color" content="#F3F5F7">');
-    expect(light).toContain('aria-label="Switch to dark theme"');
-  });
-
-  it("signed in: private head (no canonical, Open Graph or JSON-LD), site shell, no old inline styles", async () => {
-    addUser("user_o", "olga@example.com");
-    const res = await call("/", { headers: { cookie: (await sessionCookie("user_o")).cookie } });
-    const html = await res.text();
-    expect(html).toContain("<title>Your pages · austere</title>");
+    expect(res.status).toBe(200);
+    expect(html).toContain(`<link rel="stylesheet" href="/rt/${env.HUB_VERSION}/chrome/shell.css">`);
+    expect(html).toContain(`<script src="/rt/${env.HUB_VERSION}/chrome/shell.js" defer></script>`);
     expect(html).toContain('<meta name="robots" content="noindex, nofollow">');
-    expect(html).not.toMatch(/rel="canonical"|og:|twitter:|ld\+json/);
-    expect(html).toContain('action="/auth/logout"');
-    expect(res.headers.get("content-security-policy")).toContain("img-src 'self'");
+    expect(html).not.toMatch(/rel="canonical"|og:|ld\+json/);
+    const boot = /<script>window\.__AUSTERE_HUB__=(.*)<\/script>/.exec(html)![1];
+    expect(JSON.parse(boot)).toEqual({ version: env.HUB_VERSION, home: "", sep: "/", mode: "cloud", account: { email: "olga@example.com", name: "Olga Ruiz" } });
+    // The CSP allows exactly that inline script (by hash), the pinned files (self), fetches to itself, and the sign-out redirect.
+    const hash = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`window.__AUSTERE_HUB__=${boot}`)))));
+    const csp = res.headers.get("content-security-policy")!;
+    expect(csp).toContain(`script-src 'self' 'sha256-${hash}'`);
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("font-src data:");
+    expect(csp).toContain("form-action 'self' https://workos.test");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
 
-  it("empty states: no pages shows the login and publish commands; nothing shared shows its text", async () => {
-    addUser("user_o", "olga@example.com");
-    const html = await (await call("/", { headers: { cookie: (await sessionCookie("user_o")).cookie } })).text();
-    expect(html).toContain("No pages yet.");
-    expect(html).toContain("Pages you publish while the CLI is signed in as olga@example.com show up here.");
-    expect(html).toContain("<code>austere-axi cloud login</code>");
-    expect(html).toContain("<code>austere-axi publish &lt;file&gt;</code>");
-    expect(html).toContain("New to austere-axi? Install guide");
-    expect(html).toContain("Nothing shared with you yet. When an owner grants olga@example.com, the page shows up here.");
+  it("the old dashboard routes are gone", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const id = await accountPage(owner.at);
+    const cookie = await as("user_o");
+    const res = await call(`/dash/pages/${id}/grants`, { method: "POST", headers: { cookie, origin: ORIGIN }, body: new URLSearchParams({ email: "ana@example.com" }) });
+    expect(res.status).toBe(404);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM grants").first<{ n: number }>())!.n).toBe(0);
   });
 
-  it("shared with you: the owner's name, else email, and the expiry", async () => {
+  it("/hub/api answers the signed-in account only", async () => {
+    for (const p of ["projects", "pages", "shared", "search?q=x"]) expect((await call(`/hub/api/${p}`)).status, p).toBe(403);
+    addUser("user_o", "olga@example.com");
+    const res = await call("/hub/api/pages", { headers: { cookie: await as("user_o") } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect((await call("/hub/api/nope", { headers: { cookie: await as("user_o") } })).status).toBe(404);
+    expect((await call("/hub/api/pages", { method: "DELETE", headers: { cookie: await as("user_o") } })).status).toBe(405);
+  });
+
+  it("pages and projects: grouped by the project publish sent, the rest Ungrouped; with no ?project= every page", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const a = (await publish(owner.at, placed("shop", "docs/plan.html"))).id;
+    const b = (await publish(owner.at, placed("shop", "docs/pricing.html"))).id;
+    const c = (await publish(owner.at, placed("blog", "post.html"))).id;
+    const d = (await publish(owner.at)).id;
+    await grantTo(owner.at, a, "ana@example.com");
+    const cookie = await as("user_o");
+
+    const all = await get("/hub/api/pages", cookie);
+    expect(all.pages.map((p: any) => p.id).sort()).toEqual([a, b, c, d].sort());
+    expect(all.project).toBeNull();
+    expect(all.counts).toEqual({ open: 4, everything: 4, archived: 0, checked: 0 });
+    const plan = all.pages.find((p: any) => p.id === a);
+    expect(plan).toMatchObject({ project: "shop", project_id: "shop", rel_path: "docs/plan.html", title: "Plan", open_id: a, copies: [], cloud: { people: 1, notes: 0 } });
+    expect(plan.cloud.expires_at).toBeGreaterThan(Date.now() + 29 * 86400_000);
+    expect(all.pages.find((p: any) => p.id === d)).toMatchObject({ project: "Ungrouped", project_id: "~ungrouped", rel_path: "" });
+
+    const projects = (await get("/hub/api/projects", cookie)).projects;
+    expect(projects.map((p: any) => [p.id, p.name, p.pages])).toEqual([["blog", "blog", 1], ["shop", "shop", 2], ["~ungrouped", "Ungrouped", 1]]);
+
+    const shop = await get("/hub/api/pages?project=shop", cookie);
+    expect(shop.pages.map((p: any) => p.id).sort()).toEqual([a, b].sort());
+    expect(shop.project).toEqual({ id: "shop", name: "shop", ref: "shop" });
+    expect((await get("/hub/api/pages?project=~ungrouped", cookie)).pages.map((p: any) => p.id)).toEqual([d]);
+    expect(await get("/hub/api/pages?project=nothing", cookie)).toMatchObject({ pages: [], project: { id: "", name: "nothing" } });
+  });
+
+  it("another account sees none of my pages, grants or placement; expired and taken-down pages are not listed", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const id = (await publish(owner.at, placed("shop", "plan.html"))).id;
+    const gone = (await publish(owner.at)).id;
+    await env.DB.prepare("UPDATE pages SET taken_down = 1 WHERE id = ?").bind(gone).run();
+    addUser("user_e", "eve@example.com");
+    expect((await get("/hub/api/pages", await as("user_e"))).pages).toEqual([]);
+    expect((await get("/hub/api/pages", await as("user_o"))).pages.map((p: any) => p.id)).toEqual([id]);
+    expect((await call(`/hub/api/pages/${id}/grants`, { headers: { cookie: await as("user_e") } })).status).toBe(404);
+  });
+
+  it("search reads titles, paths and project names", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const a = (await publish(owner.at, { ...placed("shop", "docs/plan.html"), args: { ...placed("shop", "docs/plan.html").args, title: "Checkout" } })).id;
+    await publish(owner.at, placed("blog", "post.html"));
+    const cookie = await as("user_o");
+    const ids = async (q: string) => (await get(`/hub/api/search?q=${encodeURIComponent(q)}`, cookie)).pages.map((p: any) => p.id);
+    expect(await ids("checkout")).toEqual([a]);
+    expect(await ids("DOCS/")).toEqual([a]);
+    expect(await ids("shop")).toEqual([a]);
+    expect(await ids("zzz")).toEqual([]);
+    expect(await get("/hub/api/search?q=checkout", cookie)).toMatchObject({ q: "checkout", parts: [] });
+  });
+
+  it("grants: list, grant (normalised), an existing email, revoke (also of one not there); a foreign Origin or none is 403", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const id = await accountPage(owner.at);
+    const cookie = await as("user_o");
+    const route = `/hub/api/pages/${id}/grants`;
+    expect(await get(route, cookie)).toEqual({ owner: "olga@example.com", grants: [], limit: 100 });
+
+    const granted = await post(route, cookie, { email: " Ana@Example.com " });
+    expect(granted.status).toBe(200);
+    const g = (await granted.json()) as any;
+    expect(g).toMatchObject({ status: "granted", owner: "olga@example.com", limit: 100, grants: [{ email: "ana@example.com" }] });
+    expect(typeof g.grants[0].added_at).toBe("number");
+    expect(((await (await post(route, cookie, { email: "ana@example.com" })).json()) as any).status).toBe("exists");
+    expect((await get("/hub/api/pages", cookie)).pages[0].cloud.people).toBe(1);
+
+    const removed = (await (await post(`${route}/remove`, cookie, { email: "ana@example.com" })).json()) as any;
+    expect(removed).toMatchObject({ status: "revoked", grants: [] });
+    expect(((await (await post(`${route}/remove`, cookie, { email: "ana@example.com" })).json()) as any).status).toBe("revoked");
+
+    expect((await post(route, cookie, { email: "eve@example.com" }, "https://evil.test")).status).toBe(403);
+    expect((await post(route, cookie, { email: "eve@example.com" }, null)).status).toBe(403);
+    expect((await post(route, cookie, { email: "eve@example.com" }, "null")).status).toBe(403);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM grants").first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it("grants: a bad email and the 100-grant limit are 400, a missing or another's page 404, with a message", async () => {
+    const owner = await account("user_o", "olga@example.com");
+    const id = await accountPage(owner.at);
+    addUser("user_e", "eve@example.com");
+    const cookie = await as("user_o");
+    const route = `/hub/api/pages/${id}/grants`;
+    for (const body of [{ email: "not an email" }, {}, { email: 5 }]) {
+      const res = await post(route, cookie, body);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("email");
+    }
+    expect((await post(route, cookie, "{not json")).status).toBe(400);
+    for (let i = 0; i < 100; i++) await env.DB.prepare("INSERT INTO grants (page_id, email, role, created_at) VALUES (?, ?, 'collaborator', ?)").bind(id, `u${i}@example.com`, i).run();
+    const full = await post(route, cookie, { email: "late@example.com" });
+    expect(full.status).toBe(400);
+    expect(((await full.json()) as any).error).toContain("100 grants");
+    expect((await post("/hub/api/pages/nope/grants", cookie, { email: "a@example.com" })).status).toBe(404);
+    expect((await post(route, await as("user_e"), { email: "a@example.com" })).status).toBe(404);
+    await env.DB.prepare("UPDATE pages SET taken_down = 1 WHERE id = ?").bind(id).run();
+    expect((await post(route, cookie, { email: "a@example.com" })).status).toBe(410);
+  });
+
+  it("shared with you: title, the owner's name else email, expiry; an owner with no users row still lists the page", async () => {
     const named = await account("user_o", "olga@example.com", "Olga", "Ruiz");
     const plain = await account("user_p", "pat@example.com");
+    const orphan = await account("user_q", "quinn@example.com", "Quinn");
     const one = await accountPage(named.at);
     const two = await accountPage(plain.at);
-    await grantTo(named.at, one, "ana@example.com");
-    await grantTo(plain.at, two, "ana@example.com");
-    await env.DB.prepare("UPDATE pages SET expires_at = ? WHERE id = ?").bind(Date.now() + 30 * 3600_000, one).run();
-    addUser("user_a", "ana@example.com");
-    const html = await (await call("/", { headers: { cookie: (await sessionCookie("user_a")).cookie } })).text();
-    expect(html).toContain("Olga Ruiz");
-    expect(html).toContain("pat@example.com");
-    expect(html).toContain('<time class="soon"');
-    expect(html).toContain("Expires in 2 days");
-  });
-
-  it("shared with you: an owner with no users row still lists the page, without an owner name", async () => {
-    const owner = await account("user_o", "olga@example.com", "Olga");
-    const id = await accountPage(owner.at);
-    await grantTo(owner.at, id, "ana@example.com");
+    const three = await accountPage(orphan.at);
+    for (const [at, id] of [[named.at, one], [plain.at, two], [orphan.at, three]] as const) await grantTo(at, id, "ana@example.com");
     await env.DB.prepare("PRAGMA foreign_keys = OFF").run();
-    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind("user_o").run();
+    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind("user_q").run();
     addUser("user_a", "ana@example.com");
-    const res = await call("/", { headers: { cookie: (await sessionCookie("user_a")).cookie } });
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain(`href="/p/${id}"`);
-    expect(html).not.toContain("Olga");
-    expect(html).not.toContain("olga@example.com");
-  });
-
-  it("each owned page's register lists only its own grants", async () => {
-    const owner = await account("user_o", "olga@example.com");
-    const one = await accountPage(owner.at);
-    const two = await accountPage(owner.at);
-    await grantTo(owner.at, one, "ana@example.com");
-    await grantTo(owner.at, two, "bo@example.com");
-    const html = await (await call("/", { headers: { cookie: (await sessionCookie("user_o")).cookie } })).text();
-    const entry = (id: string) => html.slice(html.indexOf(`id="page-${id}"`), html.indexOf("</article>", html.indexOf(`id="page-${id}"`)));
-    expect(entry(one)).toContain("ana@example.com");
-    expect(entry(one)).not.toContain("bo@example.com");
-    expect(entry(two)).toContain("bo@example.com");
-    expect(entry(two)).toContain("Revoke access for bo@example.com");
+    const { pages } = await get("/hub/api/shared", await as("user_a"));
+    const by = Object.fromEntries(pages.map((p: any) => [p.id, p]));
+    expect(by[one]).toMatchObject({ title: "Plan", owner: "Olga Ruiz" });
+    expect(by[two].owner).toBe("pat@example.com");
+    expect(by[three].owner).toBeNull();
+    expect(typeof by[one].expires_at).toBe("number");
+    // The owner's own pages are not "shared with" them.
+    expect((await get("/hub/api/shared", await as("user_o"))).pages).toEqual([]);
   });
 
   it("a page deleted by its owner takes its grants with it", async () => {

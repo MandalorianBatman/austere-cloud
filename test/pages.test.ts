@@ -97,11 +97,11 @@ describe("publish placement (sync v2: project, relPath)", () => {
     expect(await row(id)).toMatchObject({ project: "shop-2", rel_path: "plan.html" });
   });
 
-  it("a page published without them has none; long values are cut", async () => {
+  it("a page published without them has none; values at the limits are kept whole", async () => {
     const token = await newOwner();
     const { id } = await publish(token);
     expect(await row(id)).toMatchObject({ project: null, rel_path: null });
-    await publish(token, { id, args: placed("p".repeat(500), "r/".repeat(900)) });
+    expect((await publish(token, { id, args: placed("p".repeat(200), "r".repeat(1000)) })).ack.error).toBeUndefined();
     const r = (await row(id))!;
     expect([String(r.project).length, String(r.rel_path).length]).toEqual([200, 1000]);
   });

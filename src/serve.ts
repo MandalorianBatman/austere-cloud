@@ -5,7 +5,7 @@ import { JS_TYPE, objectKey } from "./objects";
 import { OWNER_SESSION_MS } from "./page";
 import { signInUrl } from "./session";
 import { accountsConfigured } from "./workos";
-import { OWNER_COOKIE, PAGE_ID_RE, SHA_RE, sha256B64url } from "./util";
+import { OWNER_COOKIE, PAGE_ID_RE, SHA_RE, cspHash, sha256B64url } from "./util";
 
 const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "no-referrer" };
 const plain = (text: string, status: number) => new Response(text, { status, headers: PRIVATE });
@@ -57,12 +57,6 @@ async function publishedPage(env: Env, id: string): Promise<(PageRow & { html: s
   return page && page.html !== null && page.published_at !== null ? { ...page, html: page.html, published_at: page.published_at } : null;
 }
 
-function b64(buf: ArrayBuffer): string {
-  let s = "";
-  for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
-  return btoa(s);
-}
-
 async function shell(env: Env, id: string): Promise<Response> {
   const page = await publishedPage(env, id);
   if (page === "gone") return GONE();
@@ -82,7 +76,7 @@ async function shell(env: Env, id: string): Promise<Response> {
   };
   const bootScript = `window.__AUSTERE__=${JSON.stringify(boot).replace(/</g, "\\u003c")}`;
   // `script-src 'self'` blocks inline scripts, so the boot script is allowed by hash.
-  const hash = b64(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(bootScript)));
+  const hash = await cspHash(bootScript);
   const rt = `/rt/${page.cli_version}`;
   const html = `<!doctype html>
 <html lang="en" data-theme="dark">

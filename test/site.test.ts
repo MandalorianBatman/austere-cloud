@@ -40,7 +40,7 @@ describe("robots.txt", () => {
     expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     const body = await res.text();
     expect(body).toContain("Allow: /\n");
-    for (const p of ["/p/", "/api/", "/auth/", "/dash/", "/rt/", "/pk/"]) expect(body).toContain(`Disallow: ${p}\n`);
+    for (const p of ["/p/", "/api/", "/auth/", "/hub/", "/rt/", "/pk/"]) expect(body).toContain(`Disallow: ${p}\n`);
     expect(body).toContain("Sitemap: https://austere.blundertech.com/sitemap.xml");
   });
 });

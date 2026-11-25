@@ -9,6 +9,8 @@ export interface Env {
   MIN_CLI_VERSION: string;
   /** HMAC key for ip_hash (secret). */
   IP_HMAC_KEY: string;
+  /** The austere-axi release whose hub shell (`chrome/shell.js`, `shell.css`) the signed-in `/` loads through /rt. Pinned: a hub change reaches the cloud only through a deliberate bump. */
+  HUB_VERSION: string;
   /** Test hook: where /rt/ fetches runtime assets from. Defaults to jsDelivr. */
   RT_ORIGIN?: string;
   /** WorkOS AuthKit client id (secret by convention; it is public). Unset: accounts are off and /auth/* answers 503. */
