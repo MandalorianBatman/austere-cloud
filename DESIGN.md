@@ -4,7 +4,7 @@ Covers `/` (signed out) and `/security`. The signed-in `/` is austere-axi's hub 
 
 ## Direction
 
-The review sheet. The agent's plan is the drawing, reviewers' notes are redline marks, the owner signs off. Dark is the default: black ground, graphite panels, near-white ink. Light is the whiteprint, one click away through a no-script toggle. Active reviewed targets use the app's clean accent outline. Red markup accents highlight delta marks, revoked links, and focus rings. Square corners, ruled title blocks. No glow, bento grid or floating terminal.
+The review sheet. The agent's plan is the drawing, reviewers' notes are redline marks, the owner signs off. Dark is the default: black ground, graphite panels, near-white ink. Light is the whiteprint, one click away through a no-script toggle. Active reviewed targets use the app's clean accent outline. Red stays as the site's markup colour (decision A, Sid's brand question open for B): delta marks, step numbers and bullets, focus rings, `Revoked`, and the "A" in the favicon and share image. The review app itself has no red; its accent is blue `#8FB0FF`. Square corners, ruled title blocks. No glow, bento grid or floating terminal.
 
 ## Where it lives
 
