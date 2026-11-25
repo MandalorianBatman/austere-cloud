@@ -31,6 +31,7 @@ const LLMS = `# austere
 - CLI: \`austere-axi\` on npm, open source (MIT), needs Node.js 22.18 or later
 - Works with Claude Code, Codex, Cursor and Claude Desktop
 - Pages are invite-only by default and stop being served 30 days after the last publish
+- austere cloud is a paid service, free for a limited time
 
 ## Docs
 
@@ -42,8 +43,7 @@ const LLMS = `# austere
 
 ## Source
 
-- [austere-axi](${GH}/austere-axi): the CLI and review page
-- [austere-cloud](${GH}/austere-cloud): the hosted service
+- [austere-axi](${GH}/austere-axi): the CLI and review page (open source, MIT)
 `;
 
 function text(body: string, type: string): Response {
