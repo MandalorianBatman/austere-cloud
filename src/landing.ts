@@ -28,7 +28,7 @@ export const LANDING_META: Meta = {
         operatingSystem: "Any",
         softwareRequirements: "Node.js 22.18 or later",
         license: "https://opensource.org/license/mit",
-        sameAs: [REPO, CLOUD_REPO, "https://www.npmjs.com/package/austere-axi"],
+        sameAs: [REPO, "https://www.npmjs.com/package/austere-axi"],
       },
     ],
   },
@@ -50,7 +50,7 @@ const HELD_NOTE = (cls = "") => `<div class="note ${cls}">
 <div class="acts"><span>Send</span><span>Discard</span></div>
 </div>`;
 
-const SHEET = `<div class="sheet hero-sheet" role="img" aria-label="Sample review page: Ben circled the third rollout step and left a note that waits for the owner’s approval.">
+const SHEET = `<div class="sheet hero-sheet" role="img" aria-label="Sample review page: Ben highlighted the third rollout step and left a note that waits for the owner’s approval.">
 <div class="sheet-app" aria-hidden="true">
 <div class="app-bar"><b>Q3 migration plan</b><span class="chips"><span class="chip">Owner</span><span class="chip">Ana</span><span class="chip">Ben</span></span></div>
 <div class="app-body">
@@ -58,9 +58,8 @@ const SHEET = `<div class="sheet hero-sheet" role="img" aria-label="Sample revie
 <div class="rows">
 <div class="row"><i>1</i><span>Copy data to the new region</span><span>Mon</span></div>
 <div class="row"><i>2</i><span>Switch reads</span><span>Tue</span></div>
-<div class="rowwrap">${DELTA(1)}<div class="row revcloud"><i>3</i><span>Switch writes</span><span>Wed</span></div></div>
+<div class="row active"><i>3</i><span>Switch writes</span><span>Wed</span></div>
 </div>
-<div class="leader"></div>
 <div class="notes">
 ${HELD_NOTE("new")}
 <div class="note"><div class="note-h"><b>Ana</b><span class="tag sent">Sent</span></div><p>“Keep the old read path for a week.”</p><p class="reply">Added step 2b: keep old reads until the 14th.</p></div>
@@ -81,7 +80,7 @@ function body(signIn: string | null): string {
 <p class="lede">Your coding agent publishes its plan, design or report as a private page. Each reviewer gets a link with their name on it and leaves notes on the exact part they mean. You choose which notes reach the agent.</p>
 ${cmd("npm install -g austere-axi")}
 <div class="cta-row"><a class="btn primary" href="#start">Get started</a><a href="${INSTALL_GUIDE}">Read the install guide</a></div>
-<p class="facts">Works with Claude Code, Codex and Cursor · Invite-only by default · Open source, MIT</p>
+<p class="facts">Works with Claude Code, Codex and Cursor · Open source CLI · Free for limited time</p>
 </div>
 ${SHEET}
 </div>
@@ -125,7 +124,7 @@ Ben  ${ORIGIN}/p/k3v9qz#i=…</pre></div>
 <article class="outcome">
 <div class="out-copy"><h3>${DELTA(3)}Notes wait for your approval</h3>
 <p>Reviewers’ notes come to you first. Press <b>Send</b> to pass a note to the agent, or <b>Discard</b> to drop it. The agent’s replies appear on the page under the note. Publish with <code>--auto</code> to send notes straight to the agent.</p></div>
-<div class="out-art"><div class="rc-pad" aria-hidden="true"><div class="revcloud">${HELD_NOTE()}</div></div></div>
+<div class="out-art"><div class="rc-pad" aria-hidden="true">${HELD_NOTE()}</div></div>
 </article>
 
 <div class="more">
@@ -173,8 +172,16 @@ Ben  ${ORIGIN}/p/k3v9qz#i=…</pre></div>
 <li>An invite token sits after the <code>#</code> in its link. The browser does not send that part when it requests the page</li>
 <li>The service stores invite tokens, sessions and sign-in codes only as SHA-256 hashes</li>
 <li>A page stops being served 30 days after your last publish. <code>austere-axi publish rm</code> takes it down now</li>
-<li>The CLI and the service are open source under the MIT license</li>
+<li>The <code>austere-axi</code> CLI is open source under the MIT license</li>
+<li>austere cloud is a hosted offering, free for a limited time while we onboard early users</li>
 </ul>
+</div>
+</section>
+
+<section class="sec rule-top" id="pricing" aria-labelledby="pricing-h">
+<div class="wrap split">
+<div><p class="label">Pricing</p><h2 id="pricing-h">Free for a limited time</h2></div>
+<p class="lede">austere cloud will be a paid service. It is completely free for a limited time because we don’t have users yet. The <code>austere-axi</code> CLI is and remains free and open source under the MIT license.</p>
 </div>
 </section>
 
@@ -184,12 +191,13 @@ Ben  ${ORIGIN}/p/k3v9qz#i=…</pre></div>
 <div class="faq">
 <details><summary>Which agents does it work with?</summary><p>Claude Code, Codex and Cursor. Claude Desktop works through the MCP server. The install guide covers each one.</p></details>
 <details><summary>Do I need an account?</summary><p>Not for local review. To publish, you sign in once on each machine with <code>austere-axi cloud login</code>. Reviewers with an invite link don’t need an account.</p></details>
+<details><summary>How much does austere cloud cost?</summary><p>austere cloud will be a paid service, but it is free for a limited time because we don’t have users yet. The CLI (<code>austere-axi</code>) is and remains free and open source under MIT.</p></details>
+<details><summary>Is austere cloud open source?</summary><p>Only the CLI (<code>austere-axi</code>) is open source under the MIT license. The cloud service is a proprietary hosted offering.</p></details>
 <details><summary>Who can read a published page?</summary><p>You, the people you invite, and the email addresses you grant. A page published with <code>--unlisted</code> is the exception: anyone with its address can read it and leave notes.</p></details>
 <details><summary>How long does a page stay up?</summary><p>For 30 days after your last publish. Each publish starts the 30 days again. To take a page down now, run <code>austere-axi publish rm</code>.</p></details>
 <details><summary>What happens to a note I don’t approve?</summary><p>The note stays on the page, held, until you press <b>Send</b> or <b>Discard</b>. With <code>--auto</code>, notes go straight to the agent.</p></details>
 <details><summary>What can I publish?</summary><p>Any page austere-axi makes, such as plans, design reviews, pull request summaries and postmortems. Each upload can be up to 1 MB after compression.</p></details>
 <details><summary>What doesn’t it do yet?</summary><p>You can’t attach an image to a note. A page is a snapshot, so it doesn’t show live data.</p></details>
-<details><summary>Can I run the service myself?</summary><p>The service is open source under MIT. To use your own host, set <code>AUSTERE_AXI_CLOUD_URL</code> before you run the CLI.</p></details>
 </div>
 </div>
 </section>

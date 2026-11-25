@@ -56,4 +56,4 @@ Then open `ws://localhost:8787/api/pages/$ID/sync?cli=0.9.0` with the subprotoco
 
 ## License
 
-MIT
+Proprietary. All rights reserved. (The CLI `austere-axi` is open source under MIT).
