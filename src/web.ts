@@ -1,16 +1,15 @@
-// Browser sign-in (AuthKit) and the owner dashboard:
+// Browser sign-in (AuthKit) and the owner hub:
 //   /auth/login?return_to=<path>  → AuthKit's hosted sign-in
 //   /auth/callback                → code exchange, `austere_session` cookie, back to return_to
 //   /auth/logout                  → cookie cleared, AuthKit session ended
 //   /auth/config                  → { clientId, apiBase } for the CLI's device flow
 //   /security                     → public: who can open a shared page
 //   POST /theme                   → theme cookie (dark or light), 303 back to return_to
-//   /                             → signed out: the landing page; signed in: my pages and their grants, pages shared with me
-//   POST /dash/pages/:id/grants[/remove]  → the dashboard's grant forms
+//   /                             → signed out: the landing page; signed in: the hub (austere-axi's shell in cloud mode)
+//   /hub/api/*                    → the hub shell's JSON API (src/hub.ts)
 import type { Env } from "./env";
-import { GrantLimitError, accountOwner, addGrant, displayName, ensureUser, grantsByOwnedPage, normalEmail, removeGrant, upsertUser, type User } from "./accounts";
-import { ownedPage, ownedPages } from "./api";
-import { dashboardBody, noticeFrom, type SharedPage } from "./dashboard";
+import { ensureUser, upsertUser, type User } from "./accounts";
+import { handleHubApi, hubPage } from "./hub";
 import { verifyAccessToken, workosApi } from "./jwt";
 import {
   SESSION_COOKIE,
@@ -35,7 +34,7 @@ import { privateDocument } from "./site";
 import { THEME_COOKIE, THEME_MAX_AGE_S, parseTheme, themeOf } from "./theme";
 import { HttpError, escapeHtml, json, randomId } from "./util";
 
-// same-origin, not no-referrer: under no-referrer a browser sends `Origin: null` on the dashboard's form POSTs, which dashGrant refuses.
+// same-origin, not no-referrer: under no-referrer a browser sends `Origin: null` on same-origin POSTs (the hub's grant calls, Sign out), which are refused.
 const PRIVATE = { "x-robots-tag": "noindex, nofollow", "cache-control": "no-store", "referrer-policy": "same-origin" };
 
 /** A same-origin path to return to after sign-in; anything else is `/`. */
@@ -135,74 +134,16 @@ async function setTheme(request: Request): Promise<Response> {
   return redirect(returnPath(typeof ret === "string" ? ret : null), [cookieHeader(request, THEME_COOKIE, theme, "/", THEME_MAX_AGE_S)]);
 }
 
-// ── dashboard ──
+// ── the hub ──
 
-/** Pages shared with the account: a grant for its email on a live, published page, with the owner's name or email. */
-async function sharedPages(env: Env, user: User): Promise<SharedPage[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT p.id, p.title, p.expires_at, u.name AS owner_name, u.email AS owner_email
-     FROM grants g JOIN pages p ON p.id = g.page_id JOIN owners o ON o.id = p.owner_id LEFT JOIN users u ON u.id = o.user_id
-     WHERE g.email = ? AND p.published_at IS NOT NULL AND p.taken_down = 0 AND o.blocked = 0 AND p.expires_at > ?
-       AND (o.user_id IS NULL OR o.user_id <> ?)
-     ORDER BY p.created_at DESC`,
-  )
-    .bind(user.email, Date.now(), user.id)
-    .all<{ id: string; title: string; expires_at: number; owner_name: string | null; owner_email: string | null }>();
-  return results.map((r) => ({
-    id: r.id,
-    title: r.title,
-    expires_at: r.expires_at,
-    owner: r.owner_email === null ? null : displayName({ id: "", email: r.owner_email, name: r.owner_name ?? "" }),
-  }));
-}
-
-async function dashboard(request: Request, env: Env, session: Session): Promise<Response> {
+/** `/`: the landing page, or once signed in the hub (src/hub.ts). */
+async function home(request: Request, env: Env, session: Session): Promise<Response> {
   if (!accountsConfigured(env)) return landing(null, themeOf(request));
   if (!session.userId) return landing(signInUrl("/"), themeOf(request));
-  const url = new URL(request.url);
-  const user = await ensureUser(env, session.userId);
-  const owner = { id: await accountOwner(env, user.id), user };
-  const [pages, grants, shared] = await Promise.all([ownedPages(env, owner), grantsByOwnedPage(env, user.id), sharedPages(env, user)]);
-  const body = dashboardBody({ user, origin: url.origin, pages, grants, shared, notice: noticeFrom(url.searchParams), now: Date.now() });
-  return page(request, env, "Your pages", user, body);
+  return hubPage(env, await ensureUser(env, session.userId));
 }
 
-/**
- * The dashboard's grant forms: same-origin POSTs with the session cookie. Every outcome is a 303
- * back to the page's entry with a code (never the email: URLs reach history and logs).
- */
-async function dashGrant(request: Request, env: Env, session: Session, id: string, remove: boolean): Promise<Response> {
-  if (request.headers.get("origin") !== new URL(request.url).origin) throw new HttpError(403, "foreign origin");
-  if (!session.userId) return redirect(signInUrl("/"));
-  const user = await ensureUser(env, session.userId);
-  try {
-    await ownedPage(env, { id: await accountOwner(env, user.id), user }, id, { unpublished: true });
-  } catch (e) {
-    if (e instanceof HttpError && (e.status === 404 || e.status === 410)) return redirect("/?error=gone");
-    throw e;
-  }
-  const back = (key: "done" | "error", code: string) => redirect(`/?page=${id}&${key}=${code}#page-${id}`);
-  let email: string;
-  try {
-    email = normalEmail((await request.formData()).get("email"));
-  } catch (e) {
-    if (e instanceof HttpError) return back("error", "email");
-    throw e;
-  }
-  if (remove) {
-    // A grant that is not there ends in the same state as one just removed.
-    await removeGrant(env, id, email);
-    return back("done", "revoked");
-  }
-  try {
-    return back("done", (await addGrant(env, id, email)) ? "granted" : "exists");
-  } catch (e) {
-    if (e instanceof GrantLimitError) return back("error", "limit");
-    throw e;
-  }
-}
-
-/** Handles /, /auth/* and /dash/*; null for other paths. */
+/** Handles /, /auth/* and /hub/api/*; null for other paths. */
 export async function handleWeb(request: Request, env: Env, path: string): Promise<Response | null> {
   const m = request.method;
   const allow = (methods: string, run: () => Response | Promise<Response>) =>
@@ -213,11 +154,12 @@ export async function handleWeb(request: Request, env: Env, path: string): Promi
   if (path === "/theme") return allow("POST", () => setTheme(request));
   if (path === "/auth/config") return allow("GET", () => config(env));
   if (path === "/security") return allow("GET, HEAD", () => security(accountsConfigured(env) ? signInUrl("/") : null, themeOf(request)));
-  const grant = /^\/dash\/pages\/([^/]+)\/grants(\/remove)?$/.exec(path);
-  if (path !== "/" && !grant) return null;
-  return allow(grant ? "POST" : "GET, HEAD", async () => {
+  if (path !== "/" && !path.startsWith("/hub/api/")) return null;
+  const run = async (): Promise<Response | null> => {
     const session = await readSession(env, request);
-    const res = grant ? await dashGrant(request, env, session, grant[1], !!grant[2]) : await dashboard(request, env, session);
-    return withSession(res, session);
-  });
+    const res = path === "/" ? await home(request, env, session) : await handleHubApi(request, env, session, path);
+    return res && withSession(res, session);
+  };
+  if (path === "/") return allow("GET, HEAD", async () => (await run())!);
+  return run();
 }

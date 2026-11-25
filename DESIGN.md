@@ -1,6 +1,6 @@
 # Design system: austere cloud public pages
 
-Covers `/` (signed out), `/security` and the signed-in dashboard at `/`.
+Covers `/` (signed out) and `/security`. The signed-in `/` is austere-axi's hub shell (see Components, Hub).
 
 ## Direction
 
@@ -26,7 +26,7 @@ Dark is the default for every visitor and does not depend on `prefers-color-sche
 1. The toggle is a `<form method="post" action="/theme">` with a hidden `return_to` and one `<button name="theme" value="<target>">`. Its accessible name is "Switch to light theme" or "Switch to dark theme". Visible cells always read Dark | Light; the current one is filled.
 2. `POST /theme` (`src/web.ts`) sets the `austere_theme` cookie (`dark` or `light`, 1 year, `Path=/`, `SameSite=Lax`, `HttpOnly`) and answers 303 to `returnPath(return_to)`: a same-origin path, else `/`. An unknown theme is a 400.
 3. Every page renders `<html data-theme="…">` from the cookie (`themeOf()` in `src/theme.ts`; no cookie or an unknown value is dark), one `<meta name="color-scheme">` with that theme, and one `<meta name="theme-color">` (`#000000` dark, `#F3F5F7` light).
-4. The toggle sits in the nav on `/` and `/security` (after the links, before Sign In) and first in the dashboard's account group. Error pages without an account show it alone. It returns to the page it was on; on private pages that is `/`.
+4. The toggle sits in the nav on `/` and `/security` (after the links, before Sign In) and first in the account group of the error pages. Error pages without an account show it alone. It returns to the page it was on; on private pages that is `/`.
 5. `/security` is `private, max-age=3600` with `Vary: cookie`, since its HTML depends on the cookie. `/` and the private pages are `no-store`.
 
 `/favicon.svg`, `/og.png` and `/apple-touch-icon.png` are rendered in the dark default only.
@@ -83,11 +83,7 @@ Retired: the cyanotype (Prussian blue) dark palette and its `prefers-color-schem
 - **Inverse band:** the one committed color field; flips to #EDEDED in dark. If that is too bright, retune three tokens: `--color-inverse`, `--color-on-inverse`, `--color-on-inverse-2`.
 - **FAQ:** native `<details>`, no JS.
 - **Focus:** 2 px `--color-markup` outline, 3 px offset, on links, buttons and `summary`.
-- **Dashboard** (signed-in `/`, `src/dashboard.ts`): the drawing register. Private head (`noindex`, no canonical, Open Graph or JSON-LD) and nav (Docs, Security, GitHub, the account email above 640 px, **Sign Out** ghost `sm`). h1 "Your pages" at `--text-h2`; 8/4 columns from 1100 px, one column below, Shared under Your pages.
-  - **Register entry:** one `<article>` per page, a sheet with 1.5 px ink border and square corners. Head: h3 title link (22 px), label-type meta (expiry, notes), the page URL in mono, `user-select:all`, scrolling by itself. Then the access register: a real `<table>` (Account, Access, owner row first, one row per grant with a ghost `sm` Revoke), a muted note, and the grant form. Below 640 px rows stack and targets are 44 px.
-  - **Input:** `.field`, same 1.5 px ink border, square corners and sheet fill as the buttons, visible label above. In error: `aria-invalid` and a 2 px markup border.
-  - **Notices:** a ruled row inside the entry, above the register; `role=status` or `role=alert`. Errors add a 3 px markup bar and markup-strong text. Expiry at 3 days or less, or less than 24 h, is markup-strong at weight 600 and says so in words ("Expires in 2 days", "Expires today").
-  - Not used here: revision cloud, delta mark, grid background, inverse band, shadow, motion.
+- **Hub** (signed-in `/`, `src/hub.ts`): not this design system. It is austere-axi's hub shell in cloud mode (`chrome/shell.js` and `shell.css` of the pinned release, `HUB_VERSION`), dark only, loaded through `/rt`. Its look belongs to austere-axi; this repo serves it and answers its `/hub/api`. The theme toggle stays on the public pages.
 
 ## Motion
 
@@ -101,7 +97,7 @@ One sequence on the hero sheet at load, about 1.4 s, then still: cloud reveals l
 
 - Canonical host `https://austere.blundertech.com`. Each page has `<title>`, description, `canonical`, Open Graph, Twitter `summary_large_image`, and one `theme-color` that follows the rendered theme.
 - `/` JSON-LD: `WebSite` and `SoftwareApplication`. No `offers` or `aggregateRating` until pricing exists. `/security`: `WebPage`.
-- `/` and `/security` carry no `noindex`. `/p/*`, `/api/*`, `/auth/*`, `/dash/*`, `/rt/*`, `/pk/*` are disallowed in `robots.txt` and the HTML ones send `x-robots-tag: noindex`.
+- `/` and `/security` carry no `noindex`. `/p/*`, `/api/*`, `/auth/*`, `/hub/*`, `/rt/*`, `/pk/*` are disallowed in `robots.txt` and the HTML ones send `x-robots-tag: noindex`.
 - `sitemap.xml` lists `/` and `/security`, with no `lastmod`.
 - `apple-touch-icon.png` (180 px) is rendered from the favicon art by the same script.
 - `og.png` is rendered from `scripts/og/og.html` with Barlow Condensed Bold (OFL) for the raster only: `scripts/og/render.sh path/to/BarlowCondensed-Bold.ttf`. Commit the regenerated PNGs.

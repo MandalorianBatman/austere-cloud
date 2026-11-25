@@ -51,7 +51,7 @@ const BODY = `<div class="read"><div class="wrap read-in">
 <section aria-labelledby="back"><h2 id="back">Taking access back</h2>
 <ul class="plain">
 <li><code>austere-axi publish revoke &lt;file&gt; &lt;name&gt;</code> stops one link at once and disconnects any tab that has it open</li>
-<li>When you remove an email grant on the dashboard, that person is cut off at once</li>
+<li>When you remove an email grant in the hub, that person is cut off at once</li>
 <li><code>--expires</code> gives new invites a lifetime, such as <code>30m</code>, <code>12h</code>, <code>7d</code> or <code>2w</code></li>
 <li><code>austere-axi publish rm &lt;file&gt;</code> stops every link and deletes the page</li>
 </ul></section>

@@ -22,6 +22,13 @@ export async function sha256Hex(data: string | Uint8Array): Promise<string> {
 }
 
 /** SHA-256 as base64url (43 characters): how invite and asset tokens are stored. */
+/** The base64 SHA-256 of an inline script, as a CSP `'sha256-…'` source wants it (standard base64, not base64url). */
+export async function cspHash(script: string): Promise<string> {
+  let s = "";
+  for (const b of new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script)))) s += String.fromCharCode(b);
+  return btoa(s);
+}
+
 export async function sha256B64url(text: string): Promise<string> {
   return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(text))));
 }

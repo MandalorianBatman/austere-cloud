@@ -27,7 +27,7 @@ export function versionAllowed(env: Env, version: string): boolean {
  * dist/packs/<name>/pack.js but exposed as packs/<name>.js.
  */
 export function distPath(asset: string): string | null {
-  if (asset === "austere.js" || asset === "chrome/chrome.js" || asset === "chrome/chrome.css") {
+  if (asset === "austere.js" || asset === "chrome/chrome.js" || asset === "chrome/chrome.css" || asset === "chrome/shell.js" || asset === "chrome/shell.css") {
     return asset;
   }
   const m = /^packs\/([a-z0-9][a-z0-9-]*)\.js$/.exec(asset);

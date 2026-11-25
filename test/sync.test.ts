@@ -1,3 +1,4 @@
+import { SYNC_VERSION } from "austere-axi/sync";
 import { env } from "cloudflare:workers";
 import { evictDurableObject } from "cloudflare:test";
 import { LIMITS, syncProtocols } from "austere-axi/sync";
@@ -25,11 +26,11 @@ describe("round trip", () => {
     const [first] = await reviewer.pull(0);
     expect(first.rows.map((r) => r.type)).toEqual(["page"]);
     const page = first.rows[0] as PageRow;
-    expect(page).toMatchObject({ v: 1, id, seq: 1, title: "Plan", cliVersion: CLI, deleted: false, auto: false });
+    expect(page).toMatchObject({ v: SYNC_VERSION, id, seq: 1, title: "Plan", cliVersion: CLI, deleted: false, auto: false });
     expect(first.cursor).toBe(1);
 
     const ack = await reviewer.mutate("addNote", { ...note("Why now?"), name: "Ana" });
-    expect(ack).toEqual({ v: 1, t: "ack", clientId: reviewer.clientId, n: 1 });
+    expect(ack).toEqual({ v: SYNC_VERSION, t: "ack", clientId: reviewer.clientId, n: 1 });
 
     const live = await owner.changes();
     expect(live.cursor).toBe(2);
