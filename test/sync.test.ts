@@ -332,6 +332,26 @@ describe("mutations", () => {
     expect(((await owner.changes()).rows[0] as NoteRow).state).toBe("released");
   });
 
+  it("a granted collaborator account's note is held, and it cannot release or discard", async () => {
+    const at = await accessToken("user_host");
+    addUser("user_host", "host@example.com");
+    const { id, ack } = await publish(at);
+    expect(ack.error).toBeUndefined();
+    const grantRes = await call(`/api/pages/${id}/grants`, { method: "POST", token: at, json: { email: "ana@example.com" } });
+    expect(grantRes.status).toBe(201);
+    addUser("user_ana", "ana@example.com", "Ana");
+    const owner = await ownerSocket(at, id);
+    await owner.pull(0);
+    const ana = await reviewerSocket(id, { cookie: (await sessionCookie("user_ana")).cookie });
+    await ana.mutate("addNote", note("from a collaborator"));
+    const held = (await owner.changes()).rows[0] as NoteRow;
+    expect(held.state).toBe("held");
+    expect((await ana.mutate("releaseNote", { note: held.id })).error?.code).toBe("forbidden");
+    expect((await ana.mutate("discardNote", { note: held.id })).error?.code).toBe("forbidden");
+    const [pulled] = await owner.pull(0);
+    expect((pulled.rows.find((r) => r.id === held.id) as NoteRow).state).toBe("held");
+  });
+
   it("publish rejects unknown objects, foreign scripts and old runtimes with invalid", async () => {
     const token = await newOwner();
     const id = await createPage(token);
