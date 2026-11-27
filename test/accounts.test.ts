@@ -390,10 +390,26 @@ describe("the shell's account", () => {
     expect(mine.boot.account).toEqual({ email: "olga@example.com", name: "Olga Ruiz" });
     expect(mine.res.headers.get("cache-control")).toBe("private, no-store");
     expect(mine.html).toContain(`/rt/${env.HUB_VERSION}/chrome/chrome.js`);
+    // Sign out is a form POST that redirects to WorkOS: the sidebar's account footer needs it; the public shell keeps 'none'.
+    expect(mine.res.headers.get("content-security-policy")).toContain("form-action 'self' https://workos.test");
+    expect(anon.res.headers.get("content-security-policy")).toContain("form-action 'none'");
+    expect(mine.res.headers.get("vary")).toBe("Cookie");
+    expect(anon.res.headers.get("vary")).toBe("Cookie");
 
     expect((await bootOf(id, (await sessionCookie("user_sr")).cookie)).boot.account).toEqual({ email: "ana@example.com", name: "Ana Lopez" });
     // Signed in without a grant: the page is not theirs, and the shell says nothing about them.
     expect((await bootOf(id, (await sessionCookie("user_sx")).cookie)).boot.account).toBeUndefined();
+  });
+
+  it("serves the public shell when the account cannot be read", async () => {
+    const owner = await account("user_sf", "fay@example.com");
+    const id = await accountPage(owner.at);
+    // A valid session for a user WorkOS does not know: ensureUser fails.
+    const cookie = (await sessionCookie("user_unknown")).cookie;
+    const { res, boot } = await bootOf(id, cookie);
+    expect(res.status).toBe(200);
+    expect(boot.account).toBeUndefined();
+    expect(res.headers.get("content-security-policy")).toContain("form-action 'none'");
   });
 });
 

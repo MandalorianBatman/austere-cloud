@@ -4,6 +4,7 @@ import { ensureUser, pageRole } from "./accounts";
 import type { Env } from "./env";
 import { compareVersions } from "./runtime";
 import { JS_TYPE, objectKey } from "./objects";
+import { workosApi } from "./jwt";
 import { OWNER_SESSION_MS } from "./page";
 import { readSession, signInUrl, withSession, type Session } from "./session";
 import { accountsConfigured } from "./workos";
@@ -62,8 +63,14 @@ async function publishedPage(env: Env, id: string): Promise<(PageRow & { html: s
 /** The signed-in account that may open the page (its owner, or a grant for its email); null for anyone else, so the shell stays public. */
 async function viewerAccount(env: Env, page: PageRow, session: Session): Promise<{ email: string; name: string } | null> {
   if (!session.userId) return null;
-  const user = await ensureUser(env, session.userId);
-  return (await pageRole(env, page, user)) ? { email: user.email, name: user.name } : null;
+  // The account is a convenience: a failure (WorkOS or D1 down) serves the public shell, not an error page.
+  try {
+    const user = await ensureUser(env, session.userId);
+    return (await pageRole(env, page, user)) ? { email: user.email, name: user.name } : null;
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
 }
 
 async function shell(request: Request, env: Env, id: string): Promise<Response> {
@@ -110,11 +117,13 @@ async function shell(request: Request, env: Env, id: string): Promise<Response> 
   return withSession(new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "content-security-policy": `default-src 'none'; script-src 'self' 'sha256-${hash}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+      "content-security-policy": `default-src 'none'; script-src 'self' 'sha256-${hash}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action ${account ? `'self' ${new URL(workosApi(env)).origin}` : "'none'"}`,
       "x-robots-tag": "noindex, nofollow",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
       "cache-control": account ? "private, no-store" : "no-cache",
+      // The body depends on the session cookie.
+      vary: "Cookie",
     },
   }), session);
 }
