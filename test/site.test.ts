@@ -159,3 +159,16 @@ describe("theme", () => {
     expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
   });
 });
+
+describe("unknown route", () => {
+  it("answers 404 inside the site chrome", async () => {
+    const res = await call("/no/such/page");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("Page not found");
+    expect(html).toContain('<a class="skip"');
+    expect(html).toContain("<nav");
+    expect(html).toContain("<footer");
+  });
+});

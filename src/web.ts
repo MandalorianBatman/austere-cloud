@@ -143,6 +143,14 @@ async function home(request: Request, env: Env, session: Session): Promise<Respo
   return hubPage(env, await ensureUser(env, session.userId));
 }
 
+/** An unknown route: the site shell with a short message, status 404. Signed-in readers keep their account nav. */
+export async function notFound(request: Request, env: Env): Promise<Response> {
+  const session = await readSession(env, request);
+  const account = accountsConfigured(env) && session.userId ? await ensureUser(env, session.userId) : null;
+  const body = `<div class="read"><div class="wrap read-in"><h1>Page not found</h1><p>Nothing lives at this address.</p><p><a href="/">Back to home</a></p></div></div>`;
+  return withSession(page(request, env, "Page not found", account, body, 404), session);
+}
+
 /** Handles /, /auth/* and /hub/api/*; null for other paths. */
 export async function handleWeb(request: Request, env: Env, path: string): Promise<Response | null> {
   const m = request.method;

@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { handleApi } from "./api";
 import { handleServe } from "./serve";
-import { handleWeb } from "./web";
+import { handleWeb, notFound } from "./web";
 import { serveRuntime } from "./runtime";
 import { handleSite } from "./seo";
 import { HttpError, json } from "./util";
@@ -31,7 +31,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   const site = handleSite(request, path);
   if (site) return site;
 
-  return (await handleWeb(request, env, path)) ?? (await handleServe(request, env, path)) ?? new Response("not found", { status: 404 });
+  return (await handleWeb(request, env, path)) ?? (await handleServe(request, env, path)) ?? (await notFound(request, env));
 }
 
 export default {
