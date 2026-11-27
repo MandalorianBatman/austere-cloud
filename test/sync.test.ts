@@ -4,7 +4,16 @@ import { evictDurableObject } from "cloudflare:test";
 import { LIMITS, syncProtocols } from "austere-axi/sync";
 import type { NoteRow, PageRow, ReceivedFrame, ReplyRow } from "austere-axi/sync";
 import { describe, expect, it } from "vitest";
-import { CLI, PAGE_HTML, call, createPage, newOwner, open, ownerSocket, publish, publishArgs, putObject, refusalCode, reviewerSocket } from "./helpers";
+import { CLI, PAGE_HTML, call, createPage, invite, newOwner, open, ownerSocket, publish, publishArgs, putObject, refusalCode, reviewerSocket } from "./helpers";
+
+import { accessToken, addUser, sessionCookie } from "./workos";
+
+/** An owner sign-in session token for the page (the `austere_owner` cookie value). */
+async function ownerCookie(id: string, token: string): Promise<string> {
+  const { code } = (await (await call(`/api/pages/${id}/login`, { method: "POST", token })).json()) as { code: string };
+  const res = await call(`/p/${id}?login=${code}`);
+  return /^austere_owner=([A-Za-z0-9_-]{43})/.exec(res.headers.get("set-cookie") ?? "")![1];
+}
 
 const note = (text: string) => ({ items: [{ kind: "message" as const, text }] });
 const isError = (code: string) => (f: ReceivedFrame) => f.t === "error" && f.code === code;
@@ -289,6 +298,58 @@ describe("mutations", () => {
     const r2 = await reviewerSocket(auto.id);
     await r2.mutate("addNote", note("now"));
     expect(((await auto.owner.changes()).rows[0] as NoteRow).state).toBe("released");
+  });
+
+  it("the owner's session note is released at once, an invite's is held; only the owner's browser may release", async () => {
+    const { token, id, owner } = await published({ unlisted: false });
+    const ana = await invite(token, id, "Ana");
+    const cookie = `austere_owner=${await ownerCookie(id, token)}`;
+    const mine = await reviewerSocket(id, { cookie });
+    const guest = await reviewerSocket(id, { invite: ana });
+    await mine.mutate("addNote", note("mine"));
+    await guest.mutate("addNote", note("theirs"));
+    const rows: NoteRow[] = [];
+    while (rows.length < 2) rows.push(...((await owner.changes()).rows.filter((r) => r.type === "note") as NoteRow[]));
+    expect(rows.map((r) => [r.author, r.state])).toEqual([["Owner", "released"], ["Ana", "held"]]);
+
+    const held = rows[1].id;
+    expect((await guest.mutate("releaseNote", { note: held })).error?.code).toBe("forbidden");
+    expect((await guest.mutate("discardNote", { note: held })).error?.code).toBe("forbidden");
+    expect((await mine.mutate("addReply", { text: "x" })).error?.code).toBe("forbidden");
+    expect((await mine.mutate("releaseNote", { note: held })).error).toBeUndefined();
+    expect(((await owner.changes()).rows[0] as NoteRow).state).toBe("released");
+  });
+
+  it("an owner-account note is released at once", async () => {
+    const at = await accessToken("user_own");
+    addUser("user_own", "own@example.com");
+    const { id, ack } = await publish(at);
+    expect(ack.error).toBeUndefined();
+    const owner = await ownerSocket(at, id);
+    await owner.pull(0);
+    const sock = await reviewerSocket(id, { cookie: (await sessionCookie("user_own")).cookie });
+    await sock.mutate("addNote", note("acct"));
+    expect(((await owner.changes()).rows[0] as NoteRow).state).toBe("released");
+  });
+
+  it("a granted collaborator account's note is held, and it cannot release or discard", async () => {
+    const at = await accessToken("user_host");
+    addUser("user_host", "host@example.com");
+    const { id, ack } = await publish(at);
+    expect(ack.error).toBeUndefined();
+    const grantRes = await call(`/api/pages/${id}/grants`, { method: "POST", token: at, json: { email: "ana@example.com" } });
+    expect(grantRes.status).toBe(201);
+    addUser("user_ana", "ana@example.com", "Ana");
+    const owner = await ownerSocket(at, id);
+    await owner.pull(0);
+    const ana = await reviewerSocket(id, { cookie: (await sessionCookie("user_ana")).cookie });
+    await ana.mutate("addNote", note("from a collaborator"));
+    const held = (await owner.changes()).rows[0] as NoteRow;
+    expect(held.state).toBe("held");
+    expect((await ana.mutate("releaseNote", { note: held.id })).error?.code).toBe("forbidden");
+    expect((await ana.mutate("discardNote", { note: held.id })).error?.code).toBe("forbidden");
+    const [pulled] = await owner.pull(0);
+    expect((pulled.rows.find((r) => r.id === held.id) as NoteRow).state).toBe("held");
   });
 
   it("publish rejects unknown objects, foreign scripts and old runtimes with invalid", async () => {

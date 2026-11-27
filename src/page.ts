@@ -389,7 +389,9 @@ export class PageObject extends DurableObject<Env> {
     const stored = this.storedAck(key);
     if (stored) return this.send(ws, stored);
     const state = attachment(ws);
-    if (MUTATION_ROLE[m.name] !== state.role) {
+    // The owner's browser socket may also settle held notes, as the CLI's owner socket does.
+    const allowed = MUTATION_ROLE[m.name] === state.role || (isOwnerBrowser(state) && (m.name === "releaseNote" || m.name === "discardNote"));
+    if (!allowed) {
       return this.answer(ws, key, null, fail("forbidden", `${m.name} is sent by the ${MUTATION_ROLE[m.name]}`));
     }
     if (m.name === "delete") return this.deletePage(ws, key);
@@ -528,7 +530,8 @@ export class PageObject extends DurableObject<Env> {
     if (retry !== null) return fail("rate_limited", "note limit reached for this page; try again later", retry);
     // An account goes by its name (the owner's: `Owner`), an invited reviewer by the invite, the page sign-in by `Owner`; the open link names itself.
     const author = assignedName(state) ?? declaredName(args.name);
-    const note = { type: "note", id: randomId(12), author, items: args.items, at: Date.now(), state: page.auto ? "released" : "held" } as const;
+    // The owner's own notes skip the hold, as in the local hub.
+    const note = { type: "note", id: randomId(12), author, items: args.items, at: Date.now(), state: page.auto || isOwnerBrowser(state) ? "released" : "held" } as const;
     return {
       apply: () => [this.put(note)],
       after: async () => {
@@ -850,6 +853,11 @@ function expiredAccess(s: SocketState, now: number): string | null {
 }
 
 /** A reviewer socket's name when the server sets it: the account's, `Owner` for the owner's page sign-in, else the invite name. */
+/** A reviewer socket of the owner: their page sign-in session, or their own account. Server-set, never from a frame. */
+function isOwnerBrowser(s: SocketState): boolean {
+  return s.role === "reviewer" && (s.session !== undefined || s.account?.owner === true);
+}
+
 function assignedName(s: SocketState): string | undefined {
   return s.account?.name ?? (s.session ? OWNER_NAME : s.invite?.name);
 }
