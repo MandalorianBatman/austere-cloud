@@ -1,9 +1,11 @@
 // Public serving: the chrome shell (/p/:id), the owner's sign-in (/p/:id?login=<code>), the
 // sandboxed artifact (/p/:id/a/<assetToken>/) and pack objects (/pk/<sha>.js).
+import { ensureUser, pageRole } from "./accounts";
 import type { Env } from "./env";
+import { compareVersions } from "./runtime";
 import { JS_TYPE, objectKey } from "./objects";
 import { OWNER_SESSION_MS } from "./page";
-import { signInUrl } from "./session";
+import { readSession, signInUrl, withSession, type Session } from "./session";
 import { accountsConfigured } from "./workos";
 import { OWNER_COOKIE, PAGE_ID_RE, SHA_RE, cspHash, sha256B64url } from "./util";
 
@@ -57,10 +59,19 @@ async function publishedPage(env: Env, id: string): Promise<(PageRow & { html: s
   return page && page.html !== null && page.published_at !== null ? { ...page, html: page.html, published_at: page.published_at } : null;
 }
 
-async function shell(env: Env, id: string): Promise<Response> {
+/** The signed-in account that may open the page (its owner, or a grant for its email); null for anyone else, so the shell stays public. */
+async function viewerAccount(env: Env, page: PageRow, session: Session): Promise<{ email: string; name: string } | null> {
+  if (!session.userId) return null;
+  const user = await ensureUser(env, session.userId);
+  return (await pageRole(env, page, user)) ? { email: user.email, name: user.name } : null;
+}
+
+async function shell(request: Request, env: Env, id: string): Promise<Response> {
   const page = await publishedPage(env, id);
   if (page === "gone") return GONE();
   if (!page) return NOT_FOUND();
+  const session = await readSession(env, request);
+  const account = await viewerAccount(env, page, session);
   const base = `/p/${page.id}`;
   const boot = {
     id: page.id,
@@ -71,13 +82,17 @@ async function shell(env: Env, id: string): Promise<Response> {
     artifactUrl: `${base}/a/`,
     version: page.cli_version,
     viewer: { role: "reviewer", name: "" },
+    // `account`: the chrome shows the account's sidebar (its pages, Shared). Only for a viewer with access: the shell holds nothing else about the viewer.
+    ...(account ? { account } : {}),
     // `signIn`: where the chrome sends a viewer without access (accounts on); a top-level navigation, so the CSP needs nothing for it.
     hosted: { base, report: `${base}/report`, publishedAt: page.published_at, ...(accountsConfigured(env) ? { signIn: signInUrl(base) } : {}) },
   };
   const bootScript = `window.__AUSTERE__=${JSON.stringify(boot).replace(/</g, "\\u003c")}`;
   // `script-src 'self'` blocks inline scripts, so the boot script is allowed by hash.
   const hash = await cspHash(bootScript);
-  const rt = `/rt/${page.cli_version}`;
+  // The sidebar is in the chrome of the hub's pinned release: an account's view of a page published by an older CLI loads that one.
+  const newer = (compareVersions(env.HUB_VERSION, page.cli_version) ?? 0) > 0;
+  const rt = `/rt/${account && newer ? env.HUB_VERSION : page.cli_version}`;
   const html = `<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
@@ -92,16 +107,16 @@ async function shell(env: Env, id: string): Promise<Response> {
 </head>
 <body></body>
 </html>`;
-  return new Response(html, {
+  return withSession(new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "content-security-policy": `default-src 'none'; script-src 'self' 'sha256-${hash}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
       "x-robots-tag": "noindex, nofollow",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
-      "cache-control": "no-cache",
+      "cache-control": account ? "private, no-store" : "no-cache",
     },
-  });
+  }), session);
 }
 
 /**
@@ -179,5 +194,5 @@ export async function handleServe(request: Request, env: Env, path: string): Pro
   if (page![2]) return artifact(env, page![1], page![3] ?? "");
   const login = new URL(request.url).searchParams.get("login");
   if (login !== null && request.method === "GET") return ownerSignIn(request, env, page![1], login);
-  return shell(env, page![1]);
+  return shell(request, env, page![1]);
 }

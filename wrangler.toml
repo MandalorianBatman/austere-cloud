@@ -14,7 +14,7 @@ routes = [{ pattern = "austere.blundertech.com", custom_domain = true }]
 [vars]
 # The austere-axi release whose hub shell the signed-in `/` loads through /rt/<v>/chrome/shell.{js,css}. Bump it with the
 # `austere-axi` dependency, to a release that has the shell's cloud mode (RLM-458).
-HUB_VERSION = "0.25.0"
+HUB_VERSION = "0.27.0"
 # Lowest austere-axi version that uploads and /rt/<v>/ accept: the first release that ships `publish`.
 # The only place this value is set; tests read it from the binding.
 MIN_CLI_VERSION = "0.9.0"
