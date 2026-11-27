@@ -308,7 +308,8 @@ describe("mutations", () => {
     const guest = await reviewerSocket(id, { invite: ana });
     await mine.mutate("addNote", note("mine"));
     await guest.mutate("addNote", note("theirs"));
-    const rows = [(await owner.changes()).rows[0] as NoteRow, (await owner.changes()).rows[0] as NoteRow];
+    const rows: NoteRow[] = [];
+    while (rows.length < 2) rows.push(...((await owner.changes()).rows.filter((r) => r.type === "note") as NoteRow[]));
     expect(rows.map((r) => [r.author, r.state])).toEqual([["Owner", "released"], ["Ana", "held"]]);
 
     const held = rows[1].id;
