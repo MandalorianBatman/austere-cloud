@@ -389,7 +389,10 @@ export class PageObject extends DurableObject<Env> {
     const stored = this.storedAck(key);
     if (stored) return this.send(ws, stored);
     const state = attachment(ws);
-    if (MUTATION_ROLE[m.name] !== state.role) {
+    const ownerBrowser = state.role === "reviewer" && (state.session !== undefined || state.account?.owner === true);
+    // The owner's browser socket may also settle held notes, as the CLI's owner socket does.
+    const allowed = MUTATION_ROLE[m.name] === state.role || (ownerBrowser && (m.name === "releaseNote" || m.name === "discardNote"));
+    if (!allowed) {
       return this.answer(ws, key, null, fail("forbidden", `${m.name} is sent by the ${MUTATION_ROLE[m.name]}`));
     }
     if (m.name === "delete") return this.deletePage(ws, key);
@@ -528,7 +531,9 @@ export class PageObject extends DurableObject<Env> {
     if (retry !== null) return fail("rate_limited", "note limit reached for this page; try again later", retry);
     // An account goes by its name (the owner's: `Owner`), an invited reviewer by the invite, the page sign-in by `Owner`; the open link names itself.
     const author = assignedName(state) ?? declaredName(args.name);
-    const note = { type: "note", id: randomId(12), author, items: args.items, at: Date.now(), state: page.auto ? "released" : "held" } as const;
+    // The owner's own notes skip the hold, as in the local hub.
+    const fromOwner = state.session !== undefined || state.account?.owner === true;
+    const note = { type: "note", id: randomId(12), author, items: args.items, at: Date.now(), state: page.auto || fromOwner ? "released" : "held" } as const;
     return {
       apply: () => [this.put(note)],
       after: async () => {
